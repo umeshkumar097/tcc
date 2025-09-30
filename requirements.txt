@@ -5,3 +5,4 @@ reportlab
 openpyxl
 streamlit-drawable-canvas==0.9.3
 numpy
+pdf2image==1.17.0
