@@ -73,7 +73,7 @@ class ImageFormFiller:
             for word in words:
                 test_line = f"{current_line} {word}".strip()
                 test_bbox = draw.textbbox((0,0), test_line, font=self.pil_font)
-                test_width = test_bbox[2] - test_bbox[0]
+                test_width = test_bbox[2] - text_bbox[0]
                 if test_width <= w:
                     current_line = test_line
                 else:
@@ -144,8 +144,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Sidebar ---
-st.sidebar.image('assets/aiclex_logo.png', use_column_width=True)
-st.sidebar.markdown('<h1 style="color:#1E3A8A; font-size: 28px;">Aiclex Bulk Form Filler</h1>', unsafe_allow_html=True)
+st.sidebar.markdown('<h1 style="color:#1E3A8A; font-size: 28px;">Aiclex Technologies</h1>', unsafe_allow_html=True)
+st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 st.sidebar.write("Automate filling forms with candidate data & photos.")
 st.sidebar.markdown("---")
