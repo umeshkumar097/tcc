@@ -80,7 +80,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 st.sidebar.markdown('<h1 style="color:#1E3A8A;">Aiclex Technologies</h1>', unsafe_allow_html=True)
 st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Drawing Mode)", "🔄 Process Forms"])
+tab1, tab2, tab3 = st_tabs(["🚀 Overview", "✍️ Template Mapping (Drawing Mode)", "🔄 Process Forms"])
 
 with tab1:
     st.header("Welcome!")
@@ -97,6 +97,9 @@ with tab2:
     
     if uploaded_template:
         template_image = Image.open(uploaded_template)
+        # THE FIX IS HERE: Convert the image to RGBA format
+        template_image = template_image.convert("RGBA")
+        
         original_w, original_h = template_image.size
         st.session_state.mapping_data["image_size"] = [original_w, original_h]
         
@@ -108,8 +111,7 @@ with tab2:
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
-            # THE FIX IS HERE: Convert the image to a NumPy array
-            background_image=np.array(template_image),
+            background_image=template_image,
             update_streamlit=True,
             height=display_height,
             width=display_width,
