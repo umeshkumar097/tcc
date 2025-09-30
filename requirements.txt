@@ -1,7 +1,7 @@
-streamlit==1.33.0
-pandas==2.2.2
-Pillow==10.3.0
+streamlit
+pandas
+Pillow
 reportlab
 openpyxl
-streamlit-drawable-canvas==0.9.3
+streamlit-drawable-canvas
 numpy
