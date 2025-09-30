@@ -1,368 +1,410 @@
-# app.py
 import streamlit as st
-from pathlib import Path
 import pandas as pd
-import tempfile, shutil, zipfile, io, os, re, json
-from PIL import Image, ImageOps, ImageFont, ImageDraw
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-import datetime
-import textwrap
+import json
+import os
+import zipfile
+from PIL import Image
+from io import BytesIO
+from streamlit_drawable_canvas import st_canvas
+import shutil
 
-st.set_page_config(page_title="Form Filler with Template Mapping", layout="wide")
-st.title("Template Mapping + Bulk Form Filler")
+# Assume these will be created in ImageFormFiller.py and utils.py
+from ImageFormFiller import ImageFormFiller
+from utils import unzip_and_organize_files, create_output_zip, clean_temp_dirs, get_image_from_bytes, get_excel_df
 
-st.markdown("""
-**Flow:**  
-1. Upload blank template image (PNG/JPG).  
-2. Click **Mapping** tab → click on image to mark fields (Name, Address, DOB, Photo, etc.) and save mapping JSON.  
-3. Switch to **Processing** tab → upload Excel + input ZIP → app will fill template using mapping and create a final ZIP with per-candidate folders (maintains folder names).
-""")
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="Aiclex Bulk Form Filler",
+    page_icon="✍️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# -----------------
-# Sidebar settings
-# -----------------
-st.sidebar.header("Options")
-date_format = st.sidebar.text_input("Date format for output", value="%d-%m-%Y")
-font_size = st.sidebar.number_input("Font size (pt)", min_value=8, max_value=20, value=11)
-address_wrap_width = st.sidebar.number_input("Address wrap width (chars)", min_value=20, max_value=80, value=40)
-pdf_dpi = st.sidebar.number_input("PDF / image DPI (affects sizing)", min_value=72, max_value=300, value=150)
+# --- Constants ---
+TEMP_DIR = "temp_uploads"
+OUTPUT_DIR = "final_output"
+MAPPING_JSON_FILENAME = "template_mapping.json"
 
-# -----------------
-# Tabs: Mapping & Processing
-# -----------------
-tab = st.radio("Mode", ["Mapping", "Processing"])
+# Ensure temp and output directories exist
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Helper funcs
-def normalize(s):
-    if pd.isna(s):
-        return ""
-    return re.sub(r"\s+", " ", str(s)).strip()
+# --- Sidebar ---
+st.sidebar.image('assets/aiclex_logo.png', use_column_width=True) # Make sure aiclex_logo.png is in 'assets' folder
+st.sidebar.markdown('<h1 style="color:#1E3A8A; font-size: 28px;">Aiclex Bulk Form Filler</h1>', unsafe_allow_html=True)
+st.sidebar.markdown("---")
+st.sidebar.write("Automate filling forms with candidate data & photos.")
+st.sidebar.markdown("---")
 
-def detect_sr_column(df, hint_name=""):
-    if hint_name and hint_name in df.columns:
-        return hint_name
-    candidates = [c for c in df.columns if re.search(r"sr|sno|srno|serial|sl ?no", c, re.I)]
-    if candidates:
-        return candidates[0]
-    for c in df.columns:
-        if pd.api.types.is_integer_dtype(df[c]) or pd.api.types.is_float_dtype(df[c]):
-            return c
-    return df.columns[0]
+# --- Tabs ---
+tab1, tab2, tab3 = st.tabs(["🚀 Overview & Setup", "✍️ Template Mapping", "🔄 Process Forms"])
 
-# -----------------
-# Mapping Tab
-# -----------------
-if tab == "Mapping":
-    st.header("Template Mapping (Click to place fields)")
-    template_file = st.file_uploader("Upload blank template image (PNG/JPG)", type=["png","jpg","jpeg"])
-    st.info("Mapping will record coordinates in pixels relative to the uploaded image's width & height.")
+with tab1:
+    st.header("Welcome to Aiclex Bulk Form Filler!")
+    st.markdown("""
+        This application helps you automate the process of filling out form templates with candidate-specific data from an Excel sheet and passport photos from a ZIP archive.
+        
+        **Key Features:**
+        * **Upload Excel**: Provide candidate data including serial numbers and other fields.
+        * **Upload Photos ZIP**: A compressed archive containing per-candidate folders with their passport photos.
+        * **Upload Template Image**: Use a blank form template in PNG/JPG format.
+        * **Interactive Mapping**: Visually define where each field should be placed on your template.
+        * **Generate Filled PDFs**: Produces a personalized PDF for each candidate with their data and photo.
+        * **Organized Output**: Bundles all filled PDFs and original photos into a final ZIP, preserving structure.
+        
+        Navigate to the **Template Mapping** tab to define your form fields, and then to the **Process Forms** tab to generate your filled documents!
+        
+        ---
+        ### Quick Start
+        1.  **Template Mapping**:
+            * Upload your blank form template image.
+            * Use the interactive canvas to draw boxes for text fields and the photo.
+            * Assign field names (matching your Excel columns) to these boxes.
+            * Download the generated mapping JSON.
+        2.  **Process Forms**:
+            * Upload your saved mapping JSON.
+            * Upload your template image (again, for verification).
+            * Upload your Excel file with candidate data.
+            * Upload the ZIP file containing candidate photos.
+            * Click "Start Processing" and download the final ZIP.
+        ---
+        **Aiclex Technologies** | [Website](https://aiclex.in) | info@aiclex.in
+    """)
+    
+with tab2:
+    st.header("✍️ Template Mapping")
+    st.info("Upload your blank form template image and define where each field should be placed.")
 
-    if template_file:
-        # load image
-        img = Image.open(io.BytesIO(template_file.getvalue())).convert("RGB")
-        img_w, img_h = img.size
-        st.write(f"Image size: {img_w}px × {img_h}px")
-        # show image with streamlit components
-        st.markdown("**Click on the image to record a coordinate for a field.**")
-        st.markdown("If image doesn't allow click (Streamlit limitation), download mapping helper below and then manually provide JSON.")
+    # State variables for mapping
+    if 'mapping_data' not in st.session_state:
+        st.session_state.mapping_data = {
+            "image_size": [0, 0],
+            "fields": {}
+        }
+    if 'template_img_bytes' not in st.session_state:
+        st.session_state.template_img_bytes = None
+    if 'image_display_width' not in st.session_state:
+        st.session_state.image_display_width = 800 # Default display width for canvas
 
-        # We'll implement a simple coordinate picker using st.image + user entering coords after visually checking.
-        st.image(img, use_column_width=True)
+    uploaded_template_file = st.file_uploader(
+        "**1. Upload Blank Form Template Image (PNG/JPG)**",
+        type=["png", "jpg", "jpeg"],
+        key="mapping_template_uploader"
+    )
 
-        st.markdown("### Option A (Recommended): Visual + manual entry")
-        st.markdown("Zoom the displayed image in another window, click visually where fields are, and enter X,Y (pixels).")
+    template_image_pil = None
+    if uploaded_template_file is not None:
+        st.session_state.template_img_bytes = uploaded_template_file.getvalue()
+        template_image_pil = Image.open(BytesIO(st.session_state.template_img_bytes))
+        st.session_state.mapping_data["image_size"] = [template_image_pil.width, template_image_pil.height]
+        
+        st.write(f"Template Image Size: {template_image_pil.width} x {template_image_pil.height} pixels")
+        
+        st.markdown("---")
+        st.subheader("**2. Draw Fields on Template (Click-to-Map)**")
+        st.info("Draw rectangles on the image below to define text fields or photo boxes. After drawing, select a field name from the dropdown for each box.")
 
-        cols = st.columns(2)
-        with cols[0]:
-            st.subheader("Enter coords manually (pixels)")
-            field_name = st.selectbox("Field name", ["Name","Address","DOB","PIN CODE","Photo","Qualification","TrainingPeriod","Signature"], index=0)
-            x_coord = st.number_input("X (pixels from left)", min_value=0, max_value=img_w, value=int(img_w*0.6))
-            y_coord = st.number_input("Y (pixels from top)", min_value=0, max_value=img_h, value=int(img_h*0.15))
-            w_box = st.number_input("Box width (px) — for photo/text box", min_value=10, max_value=img_w, value=120)
-            h_box = st.number_input("Box height (px)", min_value=10, max_value=img_h, value=40)
-            add_btn = st.button("Add / Update Mapping")
-            if add_btn:
-                # load existing mapping from session_state or create
-                if "mapping" not in st.session_state:
-                    st.session_state.mapping = {"image_size": [img_w, img_h], "fields": {}}
-                st.session_state.mapping["fields"][field_name] = {"x": int(x_coord), "y": int(y_coord), "w": int(w_box), "h": int(h_box)}
-                st.success(f"Mapping set for {field_name} -> ({x_coord},{y_coord})")
-        with cols[1]:
-            st.subheader("Current mapping JSON")
-            if "mapping" in st.session_state:
-                st.json(st.session_state.mapping)
-            else:
-                st.write("No mapping yet.")
+        # Streamlit Drawable Canvas setup
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",  # Orange color with transparency
+            stroke_width=2,
+            stroke_color="#EE6002", # Aiclex orange
+            background_image=template_image_pil if template_image_pil else None,
+            update_streamlit=True,
+            height=int(template_image_pil.height * (st.session_state.image_display_width / template_image_pil.width)) if template_image_pil else 400,
+            width=st.session_state.image_display_width,
+            drawing_mode="rect",
+            point_display_radius=0,
+            key="canvas_for_mapping"
+        )
+        
+        # Mapping logic
+        st.markdown("---")
+        st.subheader("**3. Review and Name Mapped Fields**")
+        
+        # Display existing mappings from session state
+        if st.session_state.mapping_data["fields"]:
+            st.json(st.session_state.mapping_data["fields"])
+            
+        # Common fields for suggestion
+        common_fields = ["Name of the Candidate", "Address of Candidate", "PIN Code", "Photo", "Date", "Signature", "Designation", "Training Institute"]
+
+        if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
+            st.write("Newly drawn shapes:")
+            
+            # Use columns for better layout of shape naming
+            cols = st.columns(3)
+            col_idx = 0
+            
+            for i, obj in enumerate(canvas_result.json_data["objects"]):
+                if obj['type'] == 'rect':
+                    # Scale coordinates from display size back to original image size
+                    scale_factor_w = st.session_state.mapping_data["image_size"][0] / st.session_state.image_display_width
+                    scale_factor_h = st.session_state.mapping_data["image_size"][1] / (int(template_image_pil.height * (st.session_state.image_display_width / template_image_pil.width)) if template_image_pil else 400)
+                    
+                    x = int(obj['left'] * scale_factor_w)
+                    y = int(obj['top'] * scale_factor_h)
+                    w = int(obj['width'] * obj['scaleX'] * scale_factor_w)
+                    h = int(obj['height'] * obj['scaleY'] * scale_factor_h)
+
+                    unique_key = f"field_{i}"
+                    
+                    with cols[col_idx]:
+                        st.markdown(f"**Shape {i+1}:** (x:{x}, y:{y}, w:{w}, h:{h})")
+                        field_name = st.selectbox(
+                            f"Select Field Name for Shape {i+1}",
+                            [""] + common_fields + list(st.session_state.mapping_data["fields"].keys()),
+                            key=f"field_name_select_{unique_key}"
+                        )
+                        custom_field_name = st.text_input(f"Or enter custom name:", key=f"custom_field_name_{unique_key}")
+                        
+                        final_field_name = custom_field_name if custom_field_name else field_name
+                        
+                        if st.button(f"Add/Update '{final_field_name}'", key=f"add_update_button_{unique_key}") and final_field_name:
+                            st.session_state.mapping_data["fields"][final_field_name] = {"x": x, "y": y, "w": w, "h": h}
+                            st.success(f"Field '{final_field_name}' mapped successfully!")
+                            st.experimental_rerun() # Rerun to update the displayed mapping_data
+                    
+                    col_idx = (col_idx + 1) % 3 # Move to next column
 
         st.markdown("---")
-        st.subheader("Option B: Use pre-built mapping JSON (Upload)")
-        upload_map = st.file_uploader("Upload mapping JSON (if you already have one)", type=["json"])
-        if upload_map:
-            st.session_state.mapping = json.load(upload_map)
-            st.success("Mapping loaded into session.")
+        st.subheader("**4. Download Mapping JSON**")
+        if st.session_state.mapping_data["fields"]:
+            st.download_button(
+                label="Download Mapping JSON",
+                data=json.dumps(st.session_state.mapping_data, indent=2),
+                file_name=MAPPING_JSON_FILENAME,
+                mime="application/json"
+            )
+            st.success("Mapping ready. You can now proceed to the 'Process Forms' tab.")
+        else:
+            st.warning("Please draw and name fields on the template to generate the mapping JSON.")
+            
+with tab3:
+    st.header("🔄 Process Forms")
+    st.info("Upload your mapping, template, Excel data, and candidate photos to generate filled PDFs.")
 
-        # Save mapping to file
-        if "mapping" in st.session_state:
-            save_name = st.text_input("Save mapping filename", value="mapping_template.json")
-            if st.button("Download mapping JSON"):
-                b = io.BytesIO()
-                b.write(json.dumps(st.session_state.mapping, indent=2).encode("utf-8"))
-                b.seek(0)
-                st.download_button("Download mapping", data=b, file_name=save_name, mime="application/json")
-        st.markdown("**Note:** For Photo coordinate, its `w` and `h` defines photo box size. For text fields, `w` and `h` help if you want to draw a box or limit wrap.")
+    # Upload Mapping JSON
+    uploaded_mapping_file = st.file_uploader(
+        "**1. Upload Mapping JSON File**",
+        type=["json"],
+        key="processing_mapping_uploader"
+    )
+    mapping_data = None
+    if uploaded_mapping_file:
+        try:
+            mapping_data = json.load(uploaded_mapping_file)
+            st.success("Mapping JSON loaded successfully!")
+            st.json(mapping_data["fields"])
+        except Exception as e:
+            st.error(f"Error loading mapping JSON: {e}")
 
-# -----------------
-# Processing Tab
-# -----------------
-else:
-    st.header("Processing — Fill template for each candidate")
-    st.markdown("Upload previously created mapping JSON (from Mapping tab), upload template (same image used during mapping), Excel and input ZIP.")
+    st.markdown("---")
 
-    mapping_upload = st.file_uploader("Upload mapping JSON", type=["json"])
-    template_file = st.file_uploader("Upload same template image (PNG/JPG)", type=["png","jpg","jpeg"])
-    excel_file = st.file_uploader("Upload Candidate Excel (.xlsx)", type=["xlsx"])
-    input_zip = st.file_uploader("Upload Input ZIP (folders with photos)", type=["zip"])
+    # Upload Template Image (for verification)
+    uploaded_processing_template_file = st.file_uploader(
+        "**2. Upload Blank Form Template Image (PNG/JPG) - _Must be the same one used for mapping_**",
+        type=["png", "jpg", "jpeg"],
+        key="processing_template_uploader"
+    )
+    template_image_for_processing = None
+    if uploaded_processing_template_file:
+        template_image_for_processing = Image.open(BytesIO(uploaded_processing_template_file.getvalue()))
+        if mapping_data and (template_image_for_processing.width != mapping_data["image_size"][0] or 
+                            template_image_for_processing.height != mapping_data["image_size"][1]):
+            st.warning(f"Template dimensions mismatch! Mapping was for {mapping_data['image_size'][0]}x{mapping_data['image_size'][1]}, but uploaded image is {template_image_for_processing.width}x{template_image_for_processing.height}. This may lead to misalignment.")
+        else:
+            st.success("Template image loaded and dimensions match mapping.")
+    
+    st.markdown("---")
 
-    if st.button("Start Processing"):
-        # validations
-        if not mapping_upload:
-            st.error("Please upload mapping JSON.")
-            st.stop()
-        if not template_file:
-            st.error("Please upload template image.")
-            st.stop()
-        if not excel_file:
-            st.error("Please upload Excel file.")
-            st.stop()
-        if not input_zip:
-            st.error("Please upload input ZIP.")
-            st.stop()
+    # Upload Excel File
+    uploaded_excel_file = st.file_uploader(
+        "**3. Upload Candidate Data Excel File (.xlsx)**",
+        type=["xlsx"],
+        key="excel_uploader"
+    )
+    candidate_df = None
+    if uploaded_excel_file:
+        try:
+            candidate_df = get_excel_df(uploaded_excel_file)
+            st.success("Excel data loaded successfully!")
+            st.dataframe(candidate_df.head())
+        except Exception as e:
+            st.error(f"Error loading Excel file: {e}")
 
-        mapping = json.load(mapping_upload)
-        template_img = Image.open(io.BytesIO(template_file.getvalue())).convert("RGB")
-        img_w, img_h = template_img.size
-        # check mapping image size compatibility
-        if "image_size" in mapping:
-            mx, my = mapping["image_size"]
-            if mx != img_w or my != img_h:
-                st.warning(f"Mapping was created for image size {mx}x{my}, but uploaded template is {img_w}x{img_h}. Coordinates will still be used but verify positions.")
+    st.markdown("---")
 
-        # create working dir
-        work_dir = Path(tempfile.mkdtemp(prefix="formfill_"))
-        st.info(f"Working dir: {work_dir}")
+    # Upload Photos ZIP
+    uploaded_photos_zip = st.file_uploader(
+        "**4. Upload Candidate Photos ZIP File**",
+        type=["zip"],
+        key="photos_zip_uploader"
+    )
+    zip_path = None
+    if uploaded_photos_zip:
+        zip_path = os.path.join(TEMP_DIR, uploaded_photos_zip.name)
+        with open(zip_path, "wb") as f:
+            f.write(uploaded_photos_zip.getbuffer())
+        st.success("Photos ZIP uploaded successfully!")
 
-        # save template to working dir
-        template_path = work_dir / "template.png"
-        with open(template_path, "wb") as f:
-            f.write(template_file.getvalue())
+    st.markdown("---")
 
-        # save excel
-        excel_path = work_dir / "data.xlsx"
-        with open(excel_path, "wb") as f:
-            f.write(excel_file.getvalue())
+    # Start Processing Button
+    if st.button("🚀 Start Processing", type="primary", use_container_width=True):
+        if mapping_data and template_image_for_processing and candidate_df is not None and zip_path:
+            with st.spinner("Processing forms... This may take a while depending on the number of candidates."):
+                processing_successful = True
+                
+                # Create a specific temp dir for this run
+                run_temp_dir = os.path.join(TEMP_DIR, f"run_{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}")
+                os.makedirs(run_temp_dir, exist_ok=True)
+                
+                # Unzip photos
+                photo_base_dir = os.path.join(run_temp_dir, "unzipped_photos")
+                try:
+                    photo_folder_paths = unzip_and_organize_files(zip_path, photo_base_dir)
+                    st.success(f"Unzipped photos to: {photo_base_dir}")
+                except Exception as e:
+                    st.error(f"Error unzipping photos: {e}")
+                    processing_successful = False
 
-        # unzip input zip to dir
-        unzip_dir = work_dir / "input_unzipped"
-        unzip_dir.mkdir()
-        with zipfile.ZipFile(io.BytesIO(input_zip.getvalue())) as z:
-            z.extractall(path=str(unzip_dir))
+                if processing_successful:
+                    # Prepare output directory for this run
+                    run_output_dir = os.path.join(OUTPUT_DIR, f"results_{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}")
+                    os.makedirs(run_output_dir, exist_ok=True)
 
-        # find all images in unzipped
-        images = [p for p in unzip_dir.rglob("*") if p.suffix.lower() in {".jpg",".jpeg",".png"}]
-        st.write(f"Found {len(images)} images in input zip (searching recursively).")
+                    processed_count = 0
+                    report_data = []
 
-        # read excel
-        df = pd.read_excel(excel_path)
-        st.write("Excel columns:", list(df.columns))
-        sr_col = detect_sr_column(df)
-        st.write("Using SrNo column:", sr_col)
+                    # Initialize ImageFormFiller outside the loop if template is constant
+                    filler = ImageFormFiller(
+                        template_image=template_image_for_processing,
+                        mapping_data=mapping_data
+                    )
 
-        # helper to find image in input by sr or name parts
-        def find_image_for_row(row):
-            sr = normalize(row.get(sr_col,""))
-            candidates = set()
-            if sr:
-                candidates.add(str(sr))
-                candidates.add(str(sr).zfill(2))
-                candidates.add(str(int(float(sr))) if str(sr).isdigit() else str(sr))
-            # name heuristics
-            name_cols_try = ["Name","NAME","Name of the Candidate","First_Name","Full Name","Candidate","Candidate Name"]
-            name_str = ""
-            for c in name_cols_try:
-                if c in df.columns and not pd.isna(row.get(c,"")):
-                    name_str = normalize(row.get(c,""))
-                    break
-            if not name_str:
-                # first textual column
-                for c in df.columns:
-                    if df[c].dtype == object and not pd.isna(row.get(c,"")):
-                        name_str = normalize(row.get(c,""))
-                        break
-            if name_str:
-                parts = re.split(r"[ ,._\-]+", name_str.lower())
-                for p in parts:
-                    if p:
-                        candidates.add(p)
-            # match by filename contains
-            for img in images:
-                nm = img.name.lower()
-                for patt in candidates:
-                    if patt and patt.lower() in nm:
-                        return img
-            return None
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
 
-        # prepare output dir
-        output_dir = work_dir / "output"
-        output_dir.mkdir()
-        report = []
-
-        # iterate rows
-        for idx, row in df.iterrows():
-            sr_val = normalize(row.get(sr_col,""))
-            # build safe folder name: use Sr + Name (if exists)
-            name_val = ""
-            for c in ["Name","NAME","Name of the Candidate","First_Name","Full Name","Candidate"]:
-                if c in df.columns and not pd.isna(row.get(c,"")):
-                    name_val = normalize(row.get(c,""))
-                    break
-            folder_name = f"{sr_val} {name_val}".strip()
-            safe_folder = re.sub(r"[^\w\s\-_.]", "_", folder_name).strip()
-            person_dir = output_dir / safe_folder
-            person_dir.mkdir(parents=True, exist_ok=True)
-
-            matched_img = find_image_for_row(row)
-            if matched_img:
-                shutil.copy(matched_img, person_dir / matched_img.name)
-                photo_path = person_dir / matched_img.name
-            else:
-                photo_path = None
-
-            # create filled image based on template and mapping
-            filled_img = template_img.copy()
-            draw = ImageDraw.Draw(filled_img)
-            # optional: load a TTF font if available, else default
-            try:
-                # common system font fallback; adjust path if needed
-                font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-            except Exception:
-                font = ImageFont.load_default()
-
-            # place text fields
-            for field, meta in mapping.get("fields", {}).items():
-                x = meta.get("x",0)
-                y = meta.get("y",0)
-                w = meta.get("w",100)
-                h = meta.get("h",30)
-                # get matching column value from excel (try flexible matches)
-                value = ""
-                # exact match
-                # try case-insensitive match
-                for col in df.columns:
-                    if col.strip().lower() == field.strip().lower():
-                        value = normalize(row.get(col,""))
-                        break
-                # if not exact, try contains
-                if not value:
-                    for col in df.columns:
-                        if field.strip().lower() in col.strip().lower():
-                            value = normalize(row.get(col,""))
-                            break
-                # last fallback: try some known mappings
-                if not value:
-                    if field.lower() in ("name","candidate","full name"):
-                        for c in ["Name","NAME","Name of the Candidate","First_Name"]:
-                            if c in df.columns and not pd.isna(row.get(c,"")):
-                                value = normalize(row.get(c,""))
+                    for index, row in candidate_df.iterrows():
+                        candidate_srno = None
+                        # Auto-detect SrNo column
+                        for col in ['SrNo', 'Sl No.', 'SNo', 'Serial']:
+                            if col in row.index:
+                                candidate_srno = str(row[col]).split('.')[0] # Handle float-like SrNo from excel
                                 break
-                # For photo, handle separately
-                if field.lower() == "photo" or field.lower() == "photo_box" or field.lower()=="photo_box":
-                    if photo_path and photo_path.exists():
-                        # paste photo resized into this box
-                        try:
-                            ph = Image.open(photo_path).convert("RGB")
-                            # fit into w,h preserving aspect ratio
-                            ph.thumbnail((w, h))
-                            # center inside box
-                            paste_x = x + (w - ph.width)//2
-                            paste_y = y + (h - ph.height)//2
-                            filled_img.paste(ph, (int(paste_x), int(paste_y)))
-                        except Exception as e:
-                            draw.rectangle([x,y,x+w,y+h], outline="black")
-                            draw.text((x+2,y+2), "Photo error", font=font, fill="black")
-                    else:
-                        draw.rectangle([x,y,x+w,y+h], outline="black")
-                        draw.text((x+2,y+2), "Photo missing", font=font, fill="black")
-                    continue
+                        
+                        if not candidate_srno:
+                            st.warning(f"Could not find 'SrNo' column for row {index}. Skipping candidate.")
+                            report_data.append({
+                                "SrNo": "N/A",
+                                "Name": row.get('Name', 'N/A'),
+                                "Status": "Skipped (No SrNo)",
+                                "Output File": ""
+                            })
+                            continue
 
-                # if field is address or long, wrap text
-                if field.lower() in ("address","address of candidate","address_line1","address_line2"):
-                    lines = textwrap.wrap(value, width=address_wrap_width)
-                    ly = y
-                    for ln in lines:
-                        draw.text((x, ly), ln, font=font, fill="black")
-                        ly += font.getsize(ln)[1] + 2
-                else:
-                    # single line
-                    draw.text((x, y), str(value), font=font, fill="black")
+                        candidate_name_for_folder = row.get('Name', f"Candidate_{candidate_srno}") # Fallback name
+                        output_candidate_folder = os.path.join(run_output_dir, f"{candidate_srno} {candidate_name_for_folder}")
+                        os.makedirs(output_candidate_folder, exist_ok=True)
 
-            # save filled image as PDF (one-page)
-            out_pdf_path = person_dir / f"{safe_folder}_filled.pdf"
-            # Convert to RGB if not
-            if filled_img.mode != "RGB":
-                filled_img = filled_img.convert("RGB")
-            # Save as temporary image then embed into PDF with reportlab to keep A4 sizing
-            temp_img_path = person_dir / "temp_filled.png"
-            filled_img.save(temp_img_path, dpi=(pdf_dpi, pdf_dpi))
-            # Create PDF with reportlab drawing the image full page
-            c = canvas.Canvas(str(out_pdf_path), pagesize=A4)
-            page_w, page_h = A4
-            # Open saved image to get size and scale to fit A4 while preserving aspect
-            bg = Image.open(temp_img_path)
-            bg_w, bg_h = bg.size
-            scale = min(page_w/bg_w, page_h/bg_h)
-            draw_w = bg_w * scale
-            draw_h = bg_h * scale
-            x0 = (page_w - draw_w)/2
-            y0 = (page_h - draw_h)/2
-            bio = io.BytesIO()
-            bg.save(bio, format="PNG")
-            bio.seek(0)
-            c.drawImage(ImageReader(bio), x0, y0, width=draw_w, height=draw_h)
-            c.save()
-            # cleanup temp image
-            try:
-                temp_img_path.unlink()
-            except:
-                pass
+                        # Find photo for candidate
+                        photo_found = False
+                        photo_filename = "N/A"
+                        candidate_photo_path = None
+                        
+                        # Search logic based on SrNo and name
+                        for root, _, files in os.walk(photo_base_dir):
+                            for file in files:
+                                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                                    # Simple matching: check SrNo or name in folder/file
+                                    if candidate_srno in root or candidate_srno in file or \
+                                       candidate_name_for_folder.lower() in root.lower() or \
+                                       candidate_name_for_folder.lower() in file.lower():
+                                        candidate_photo_path = os.path.join(root, file)
+                                        photo_filename = file
+                                        photo_found = True
+                                        break
+                            if photo_found:
+                                break
 
-            report.append({
-                "SrNo": sr_val,
-                "Name": name_val,
-                "Folder": str(person_dir.relative_to(work_dir)),
-                "PhotoFound": bool(photo_path),
-                "PhotoName": photo_path.name if photo_path else ""
-            })
+                        if not photo_found:
+                            st.warning(f"No photo found for SrNo: {candidate_srno}, Name: {candidate_name_for_folder}")
+                            report_data.append({
+                                "SrNo": candidate_srno,
+                                "Name": candidate_name_for_folder,
+                                "Status": "Processed (No Photo)",
+                                "Output File": f"{candidate_srno}_{candidate_name_for_folder}_filled.pdf"
+                            })
+                            # Still proceed to fill text, just without photo
+                            final_pdf_path = filler.fill_and_save_pdf(
+                                output_folder=output_candidate_folder,
+                                candidate_data=row.to_dict(),
+                                candidate_srno=candidate_srno,
+                                candidate_name=candidate_name_for_folder,
+                                photo_path=None
+                            )
+                            # Copy the default empty photo or just skip copying
+                        else:
+                            # Copy original photo to output folder
+                            shutil.copy(candidate_photo_path, output_candidate_folder)
+                            
+                            # Fill form with photo
+                            final_pdf_path = filler.fill_and_save_pdf(
+                                output_folder=output_candidate_folder,
+                                candidate_data=row.to_dict(),
+                                candidate_srno=candidate_srno,
+                                candidate_name=candidate_name_for_folder,
+                                photo_path=candidate_photo_path
+                            )
+                            st.write(f"Generated PDF for {candidate_srno} {candidate_name_for_folder}")
+                            report_data.append({
+                                "SrNo": candidate_srno,
+                                "Name": candidate_name_for_folder,
+                                "Status": "Processed Successfully",
+                                "Photo Found": photo_filename,
+                                "Output File": os.path.basename(final_pdf_path)
+                            })
 
-        # create final zip preserving per-candidate folders
-        final_zip = work_dir / "final_filled_results.zip"
-        with zipfile.ZipFile(final_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(output_dir):
-                for file in files:
-                    full = Path(root) / file
-                    arc = str(full.relative_to(output_dir))
-                    zf.write(full, arcname=arc)
 
-        st.success("Processing complete.")
-        st.write("Report:")
-        st.dataframe(pd.DataFrame(report))
+                        processed_count += 1
+                        progress_bar.progress(processed_count / len(candidate_df))
+                        status_text.text(f"Processing candidate {processed_count}/{len(candidate_df)}: {candidate_name_for_folder}")
 
-        with open(final_zip, "rb") as f:
-            st.download_button("Download final ZIP", data=f, file_name="final_filled_results.zip", mime="application/zip")
+                    st.success(f"Successfully processed {processed_count} out of {len(candidate_df)} candidates!")
+                    
+                    # Generate report.csv
+                    report_df = pd.DataFrame(report_data)
+                    report_csv_path = os.path.join(run_output_dir, "processing_report.csv")
+                    report_df.to_csv(report_csv_path, index=False)
+                    st.download_button(
+                        label="Download Processing Report (CSV)",
+                        data=report_df.to_csv(index=False).encode('utf-8'),
+                        file_name="processing_report.csv",
+                        mime="text/csv"
+                    )
 
-        st.markdown(f"Temporary working folder: `{work_dir}` (you can inspect if needed).")
-        st.info("After confirming results, delete temporary folder. For production, implement scheduled cleanup.")
+                    # Create final ZIP
+                    final_zip_output_path = os.path.join(OUTPUT_DIR, f"final_filled_results_{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}.zip")
+                    create_output_zip(run_output_dir, final_zip_output_path)
+                    
+                    st.success("All forms processed and bundled into a final ZIP!")
+                    with open(final_zip_output_path, "rb") as fp:
+                        st.download_button(
+                            label="Download Final Filled Results ZIP",
+                            data=fp.read(),
+                            file_name=os.path.basename(final_zip_output_path),
+                            mime="application/zip",
+                            type="primary"
+                        )
+                
+                # Clean up temporary directories
+                clean_temp_dirs(run_temp_dir)
+                st.info("Temporary files cleaned up.")
 
-        st.markdown("**If you want, I can now:**")
-        st.markdown("- Provide a small UI to auto-detect field names from Excel and suggest mapping.  \n- Add PDF template support directly (render page to image).  \n- Wrap into Docker for client deployment.")
+        else:
+            st.warning("Please upload all required files (Mapping JSON, Template Image, Excel, Photos ZIP) before starting the process.")
+
+# --- Cleanup on script end (optional, but good for local dev) ---
+# This part is generally for development; in deployment, use scheduled cleanup
+# clean_temp_dirs(TEMP_DIR) # You might not want this to run every time Streamlit refreshes
