@@ -2,143 +2,220 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-import shutil
+import zipfile
 from PIL import Image
 from io import BytesIO
+from streamlit_drawable_canvas import st_canvas
+import shutil
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 
-# Import from your other python files
-from ImageFormFiller import ImageFormFiller
-from utils import unzip_and_organize_files, create_output_zip, clean_temp_dirs, get_excel_df
+# --- All Helper Functions are included in this single file ---
+def unzip_and_organize_files(zip_file_path: str, destination_dir: str):
+    os.makedirs(destination_dir, exist_ok=True)
+    with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+        zip_ref.extractall(destination_dir)
+    return destination_dir
 
-#======================================================================
-# STREAMLIT APP UI AND MAIN LOGIC
-#======================================================================
-st.set_page_config(page_title="Aiclex Bulk Form Filler", page_icon="✍️", layout="wide")
+def create_output_zip(source_dir: str, output_zip_path: str):
+    shutil.make_archive(os.path.splitext(output_zip_path)[0], 'zip', source_dir)
+    return output_zip_path
 
-# --- Constants & Setup ---
-TEMP_DIR = "temp_uploads"
-OUTPUT_DIR = "final_output"
+def clean_temp_dirs(directory: str):
+    if os.path.exists(directory) and os.path.isdir(directory):
+        try: shutil.rmtree(directory)
+        except Exception as e: print(f"Error cleaning directory: {e}")
+
+def get_excel_df(excel_file_buffer) -> pd.DataFrame:
+    return pd.read_excel(excel_file_buffer)
+
+class ImageFormFiller:
+    def __init__(self, template_image: Image.Image, mapping_data: dict, font_path: str, font_size: int = 48):
+        self.template_image = template_image.convert('RGB')
+        self.mapping_data = mapping_data
+        self.font_path = font_path
+        self.font_size = font_size
+        self.dpi = 300
+        self.page_width_pts = (self.template_image.width / self.dpi) * inch
+        self.page_height_pts = (self.template_image.height / self.dpi) * inch
+        try: self.pil_font = ImageFont.truetype(self.font_path, self.font_size)
+        except IOError: self.pil_font = ImageFont.load_default()
+
+    def _draw_text_on_image(self, draw: ImageDraw.Draw, text: str, x: int, y: int, w: int, h: int):
+        # This is a simplified text drawing function
+        draw.text((x, y), text, font=self.pil_font, fill=(0, 0, 0))
+
+    def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, srno: str, name: str, photo_path: str = None):
+        # This function logic assumes a hardcoded template for processing.
+        # We will need to load the template image again here for processing.
+        # For simplicity, we assume the template is available.
+        filled_image = self.template_image.copy()
+        draw = ImageDraw.Draw(filled_image)
+        for field, coords in self.mapping_data["fields"].items():
+            x, y, w, h = coords["x"], coords["y"], coords["w"], coords["h"]
+            if field.lower() == "photo" and photo_path:
+                try:
+                    with Image.open(photo_path) as photo:
+                        photo = photo.resize((w, h), Image.Resampling.LANCZOS)
+                        filled_image.paste(photo, (x, y))
+                except Exception as e: print(f"Error with photo for {name}: {e}")
+            else:
+                value = next((str(v) for k, v in candidate_data.items() if k.lower().replace("_", " ") == field.lower()), None)
+                if value: self._draw_text_on_image(draw, value, x, y, w, h)
+        
+        pdf_path = os.path.join(output_folder, f"{srno}_{name.replace(' ', '_')}.pdf")
+        with BytesIO() as img_buffer:
+            filled_image.save(img_buffer, format='PNG', dpi=(self.dpi, self.dpi))
+            img_buffer.seek(0)
+            c = canvas.Canvas(pdf_path, pagesize=(self.page_width_pts, self.page_height_pts))
+            c.drawImage(ImageReader(img_buffer), 0, 0, width=self.page_width_pts, height=self.page_height_pts)
+            c.save()
+
+# --- Streamlit App UI ---
+st.set_page_config(page_title="Aiclex Bulk Form Filler", layout="wide")
+TEMP_DIR, OUTPUT_DIR = "temp", "output"
 FONT_PATH = "assets/DejaVuSans.ttf"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Sidebar ---
 st.sidebar.markdown('<h1 style="color:#1E3A8A;">Aiclex Technologies</h1>', unsafe_allow_html=True)
 st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
-st.sidebar.markdown("---")
 
-# --- Main App Tabs ---
-tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping", "🔄 Process Forms"])
+tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Drawing Mode)", "🔄 Process Forms"])
 
 with tab1:
-    st.header("Welcome to Aiclex Bulk Form Filler!")
-    st.markdown("This application automates filling out forms with data from Excel and candidate photos.")
+    st.header("Welcome!")
+    st.write("Use the 'Template Mapping' tab to draw on your form, then use 'Process Forms' to generate the documents.")
 
 with tab2:
-    st.header("✍️ Template Mapping (Manual Mode)")
-    st.info("This is a reliable manual method to define where fields go on your form.")
+    st.header("✍️ Template Mapping (Drawing Mode)")
+    st.info("Draw rectangles on the image below and name them. The app will calculate the coordinates for you.")
 
     if 'mapping_data' not in st.session_state:
         st.session_state.mapping_data = {"image_size": [0, 0], "fields": {}}
 
-    uploaded_template_file = st.file_uploader("**1. Upload Blank Form Image**", type=["png", "jpg", "jpeg"])
+    uploaded_template = st.file_uploader("1. Upload Your Blank Form Image", type=["png", "jpg"])
+    
+    if uploaded_template:
+        template_image = Image.open(uploaded_template)
+        original_w, original_h = template_image.size
+        st.session_state.mapping_data["image_size"] = [original_w, original_h]
+        
+        st.subheader("2. Draw Boxes on the Image and Name Them")
+        
+        # Adjust display width to fit the screen reasonably
+        display_width = 800
+        display_height = int(original_h * (display_width / original_w))
+        
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",
+            stroke_width=2,
+            background_image=template_image,
+            update_streamlit=True,
+            height=display_height,
+            width=display_width,
+            drawing_mode="rect",
+            key="canvas",
+        )
 
-    if uploaded_template_file:
-        template_image_pil = Image.open(uploaded_template_file)
-        w, h = template_image_pil.size
-        st.session_state.mapping_data["image_size"] = [w, h]
-
-        st.markdown("---")
-        st.image(template_image_pil, caption="Your Uploaded Template")
-        st.success(f"**Image Dimensions:** Width = {w}px, Height = {h}px")
-        st.warning("Use an image editor (like MS Paint or Mac Preview) to find the pixel coordinates for each field.")
-
-        st.markdown("---")
-        st.subheader("2. Add Fields Manually")
-
-        with st.form("mapping_form"):
-            cols = st.columns([2, 1, 1, 1, 1])
-            field_name = cols[0].text_input("Field Name (e.g., Name, Photo)")
-            x_coord = cols[1].number_input("X", min_value=0, step=10)
-            y_coord = cols[2].number_input("Y", min_value=0, step=10)
-            width = cols[3].number_input("Width", min_value=10, step=10, value=300)
-            height = cols[4].number_input("Height", min_value=10, step=10, value=50)
-            submitted = st.form_submit_button("Add Field")
-
-            if submitted and field_name:
-                st.session_state.mapping_data["fields"][field_name] = {"x": x_coord, "y": y_coord, "w": width, "h": height}
-                st.success(f"Added field '{field_name}'")
-
-        st.markdown("---")
-        st.subheader("3. Review and Download Mapping JSON")
+        if canvas_result.json_data is not None and canvas_result.json_data["objects"]:
+            st.subheader("3. Name the Boxes You Drew")
+            # Create a dictionary to hold the names from the text inputs
+            field_names = {}
+            for i, obj in enumerate(canvas_result.json_data["objects"]):
+                field_names[i] = st.text_input(f"Name for Box {i+1}", key=f"field_name_{i}")
+            
+            # Button to confirm and process the names
+            if st.button("Confirm Field Names"):
+                st.session_state.mapping_data["fields"] = {} # Clear previous fields
+                for i, obj in enumerate(canvas_result.json_data["objects"]):
+                    field_name = field_names.get(i)
+                    if field_name:
+                        # Scale coordinates from display size back to original image size
+                        scale_w = original_w / display_width
+                        scale_h = original_h / display_height
+                        st.session_state.mapping_data["fields"][field_name] = {
+                            "x": int(obj['left'] * scale_w),
+                            "y": int(obj['top'] * scale_h),
+                            "w": int(obj['width'] * scale_w),
+                            "h": int(obj['height'] * scale_h)
+                        }
+                st.success("Field names confirmed and coordinates saved!")
+                st.experimental_rerun()
+        
+        st.subheader("4. Download Your Mapping File")
         if st.session_state.mapping_data["fields"]:
             st.json(st.session_state.mapping_data["fields"])
             st.download_button(
                 label="Download Mapping JSON",
                 data=json.dumps(st.session_state.mapping_data, indent=2),
-                file_name="manual_mapping.json",
+                file_name="drawable_mapping.json",
                 mime="application/json"
             )
 
 with tab3:
     st.header("🔄 Process Forms")
-    st.info("Upload all your files here to begin generating the documents.")
+    # In this simplified version, we assume the template used for mapping is the one for processing.
+    # The app needs a way to get the template image for the ImageFormFiller.
+    # A simple way is to ask for it again, or use session_state if mapped in the same session.
+    # For robustness, we will ask for the template image again.
 
-    uploaded_mapping_file = st.file_uploader("**1. Upload Mapping JSON File**", type=["json"])
-    uploaded_template_for_processing = st.file_uploader("**2. Upload Blank Form Image**", type=["png", "jpg", "jpeg"])
-    uploaded_excel_file = st.file_uploader("**3. Upload Candidate Data Excel File (.xlsx)**", type=["xlsx"])
-    uploaded_photos_zip = st.file_uploader("**4. Upload Candidate Photos ZIP File**", type=["zip"])
+    uploaded_template_for_processing = st.file_uploader("1. Upload the Same Blank Form Image Again", type=["png", "jpg"])
+    mapping_file = st.file_uploader("2. Upload Your Saved Mapping JSON", type=["json"])
+    excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
+    zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
 
     if st.button("🚀 Start Processing", type="primary"):
-        if all([uploaded_mapping_file, uploaded_template_for_processing, uploaded_excel_file, uploaded_photos_zip]):
+        if all([uploaded_template_for_processing, mapping_file, excel_file, zip_file]):
             with st.spinner("Processing..."):
-                mapping_data = json.load(uploaded_mapping_file)
-                template_image = Image.open(uploaded_template_for_processing)
-                candidate_df = get_excel_df(uploaded_excel_file)
+                template_image_process = Image.open(uploaded_template_for_processing)
+                mapping = json.load(mapping_file)
+                df = get_excel_df(excel_file)
                 
-                zip_path = os.path.join(TEMP_DIR, uploaded_photos_zip.name)
-                with open(zip_path, "wb") as f: f.write(uploaded_photos_zip.getbuffer())
+                zip_path = os.path.join(TEMP_DIR, zip_file.name)
+                with open(zip_path, "wb") as f: f.write(zip_file.getbuffer())
                 
-                run_temp_dir = os.path.join(TEMP_DIR, "run")
-                if os.path.exists(run_temp_dir): shutil.rmtree(run_temp_dir)
-                photo_base_dir = unzip_and_organize_files(zip_path, run_temp_dir)
-                
-                run_output_dir = os.path.join(OUTPUT_DIR, "results")
-                if os.path.exists(run_output_dir): shutil.rmtree(run_output_dir)
-                os.makedirs(run_output_dir)
+                photo_dir = unzip_and_organize_files(zip_path, os.path.join(TEMP_DIR, "photos"))
+                output_run_dir = os.path.join(OUTPUT_DIR, "run")
+                if os.path.exists(output_run_dir): shutil.rmtree(output_run_dir)
+                os.makedirs(output_run_dir)
 
-                filler = ImageFormFiller(template_image, mapping_data, font_path=FONT_PATH, font_size=24)
+                filler = ImageFormFiller(template_image_process, mapping, FONT_PATH, font_size=24)
                 
                 progress_bar = st.progress(0)
-                for i, row in candidate_df.iterrows():
-                    sr_no_col = next((c for c in ['SrNo', 'Sl No.', 'SNo', 'Serial'] if c in row.index), None)
-                    if not sr_no_col: continue
+                total_rows = len(df)
+                for i, row in df.iterrows():
+                    sr_col = next((c for c in ['SrNo', 'Sl No.', 'SNo', 'Serial'] if c in df.columns), None)
+                    if not sr_col:
+                        st.error("Error: 'SrNo' or 'Sl No.' column not found in Excel.")
+                        break
                     
-                    candidate_srno = str(row[sr_no_col]).split('.')[0]
-                    candidate_name = row.get('Name', f"Candidate_{candidate_srno}")
-                    output_folder = os.path.join(run_output_dir, f"{candidate_srno} {candidate_name}")
-                    os.makedirs(output_folder)
+                    srno = str(row[sr_col]).split('.')[0]
+                    name = row.get('Name', f"Candidate_{srno}")
                     
                     photo_path = None
-                    for root, _, files in os.walk(photo_base_dir):
+                    # Simple search for photo file
+                    for root, _, files in os.walk(photo_dir):
                         found = False
                         for file in files:
-                            if candidate_srno in os.path.basename(root) or candidate_srno in file:
+                            if srno in file or srno in os.path.basename(root):
                                 photo_path = os.path.join(root, file)
-                                shutil.copy(photo_path, output_folder)
                                 found = True
                                 break
                         if found: break
                     
-                    filler.fill_and_save_pdf(output_folder, row.to_dict(), candidate_srno, candidate_name, photo_path)
-                    progress_bar.progress((i + 1) / len(candidate_df))
+                    candidate_folder = os.path.join(output_run_dir, f"{srno} {name}")
+                    os.makedirs(candidate_folder, exist_ok=True)
+                    if photo_path: shutil.copy(photo_path, candidate_folder)
+                    
+                    filler.fill_and_save_pdf(candidate_folder, row.to_dict(), srno, name, photo_path)
+                    progress_bar.progress((i + 1) / total_rows)
 
-                final_zip_path = os.path.join(OUTPUT_DIR, "final_results.zip")
-                create_output_zip(run_output_dir, final_zip_path)
-
-                with open(final_zip_path, "rb") as fp:
-                    st.download_button("✅ Success! Download Final ZIP", fp, "final_results.zip", "application/zip", type="primary")
-
-                clean_temp_dirs(run_temp_dir)
+                final_zip = os.path.join(OUTPUT_DIR, "final_results.zip")
+                create_output_zip(output_run_dir, final_zip)
+                with open(final_zip, "rb") as fp:
+                    st.download_button("✅ Download Final ZIP", fp, "final_results.zip", "application/zip")
+                clean_temp_dirs(TEMP_DIR)
         else:
-            st.error("Please upload all four required files.")
+            st.error("Please upload all four files to start processing.")
