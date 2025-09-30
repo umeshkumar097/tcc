@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import os
 import zipfile
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 from streamlit_drawable_canvas import st_canvas
 import shutil
@@ -47,9 +47,6 @@ class ImageFormFiller:
         draw.text((x, y), text, font=self.pil_font, fill=(0, 0, 0))
 
     def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, srno: str, name: str, photo_path: str = None):
-        # This function logic assumes a hardcoded template for processing.
-        # We will need to load the template image again here for processing.
-        # For simplicity, we assume the template is available.
         filled_image = self.template_image.copy()
         draw = ImageDraw.Draw(filled_image)
         for field, coords in self.mapping_data["fields"].items():
@@ -104,7 +101,6 @@ with tab2:
         
         st.subheader("2. Draw Boxes on the Image and Name Them")
         
-        # Adjust display width to fit the screen reasonably
         display_width = 800
         display_height = int(original_h * (display_width / original_w))
         
@@ -121,18 +117,15 @@ with tab2:
 
         if canvas_result.json_data is not None and canvas_result.json_data["objects"]:
             st.subheader("3. Name the Boxes You Drew")
-            # Create a dictionary to hold the names from the text inputs
             field_names = {}
             for i, obj in enumerate(canvas_result.json_data["objects"]):
                 field_names[i] = st.text_input(f"Name for Box {i+1}", key=f"field_name_{i}")
             
-            # Button to confirm and process the names
             if st.button("Confirm Field Names"):
-                st.session_state.mapping_data["fields"] = {} # Clear previous fields
+                st.session_state.mapping_data["fields"] = {} 
                 for i, obj in enumerate(canvas_result.json_data["objects"]):
                     field_name = field_names.get(i)
                     if field_name:
-                        # Scale coordinates from display size back to original image size
                         scale_w = original_w / display_width
                         scale_h = original_h / display_height
                         st.session_state.mapping_data["fields"][field_name] = {
@@ -156,11 +149,6 @@ with tab2:
 
 with tab3:
     st.header("🔄 Process Forms")
-    # In this simplified version, we assume the template used for mapping is the one for processing.
-    # The app needs a way to get the template image for the ImageFormFiller.
-    # A simple way is to ask for it again, or use session_state if mapped in the same session.
-    # For robustness, we will ask for the template image again.
-
     uploaded_template_for_processing = st.file_uploader("1. Upload the Same Blank Form Image Again", type=["png", "jpg"])
     mapping_file = st.file_uploader("2. Upload Your Saved Mapping JSON", type=["json"])
     excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
@@ -195,7 +183,6 @@ with tab3:
                     name = row.get('Name', f"Candidate_{srno}")
                     
                     photo_path = None
-                    # Simple search for photo file
                     for root, _, files in os.walk(photo_dir):
                         found = False
                         for file in files:
