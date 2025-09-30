@@ -44,7 +44,6 @@ class ImageFormFiller:
         except IOError: self.pil_font = ImageFont.load_default()
 
     def _draw_text_on_image(self, draw: ImageDraw.Draw, text: str, x: int, y: int, w: int, h: int):
-        # This is a simplified text drawing function
         draw.text((x, y), text, font=self.pil_font, fill=(0, 0, 0))
 
     def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, srno: str, name: str, photo_path: str = None):
@@ -74,6 +73,7 @@ class ImageFormFiller:
 st.set_page_config(page_title="Aiclex Bulk Form Filler", layout="wide")
 TEMP_DIR, OUTPUT_DIR = "temp", "output"
 FONT_PATH = "assets/DejaVuSans.ttf"
+TEMPLATE_PATH = "assets/template.png"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -88,20 +88,18 @@ with tab1:
 
 with tab2:
     st.header("✍️ Template Mapping (Drawing Mode)")
-    st.info("Draw rectangles on the image below and name them. The app will calculate the coordinates for you.")
+    st.info("Aapka template neeche dikh raha hai. Us par box banayein aur unhe naam dein.")
 
     if 'mapping_data' not in st.session_state:
         st.session_state.mapping_data = {"image_size": [0, 0], "fields": {}}
 
-    uploaded_template = st.file_uploader("1. Upload Your Blank Form Image", type=["png", "jpg"])
-    
-    if uploaded_template:
-        template_image = Image.open(uploaded_template).convert("RGBA")
+    try:
+        template_image = Image.open(TEMPLATE_PATH).convert("RGBA")
         
         original_w, original_h = template_image.size
         st.session_state.mapping_data["image_size"] = [original_w, original_h]
         
-        st.subheader("2. Draw Boxes on the Image and Name Them")
+        st.subheader("1. Template par Box Banayein")
         
         display_width = 800
         display_height = int(original_h * (display_width / original_w))
@@ -118,10 +116,10 @@ with tab2:
         )
 
         if canvas_result.json_data is not None and canvas_result.json_data["objects"]:
-            st.subheader("3. Name the Boxes You Drew")
+            st.subheader("2. Banaye gaye Box ko Naam Dein")
             field_names = {}
             for i, obj in enumerate(canvas_result.json_data["objects"]):
-                field_names[i] = st.text_input(f"Name for Box {i+1}", key=f"field_name_{i}")
+                field_names[i] = st.text_input(f"Box {i+1} ka Naam", key=f"field_name_{i}")
             
             if st.button("Confirm Field Names"):
                 st.session_state.mapping_data["fields"] = {} 
@@ -136,10 +134,10 @@ with tab2:
                             "w": int(obj['width'] * scale_w),
                             "h": int(obj['height'] * scale_h)
                         }
-                st.success("Field names confirmed and coordinates saved!")
+                st.success("Coordinates save ho gaye hain!")
                 st.experimental_rerun()
         
-        st.subheader("4. Download Your Mapping File")
+        st.subheader("3. Apni Mapping File Download Karein")
         if st.session_state.mapping_data["fields"]:
             st.json(st.session_state.mapping_data["fields"])
             st.download_button(
@@ -149,17 +147,23 @@ with tab2:
                 mime="application/json"
             )
 
+    except FileNotFoundError:
+        st.error(f"ERROR: 'template.png' file not found in the 'assets' folder.")
+        st.warning("Please make sure you have uploaded a file named 'template.png' to the 'assets' folder in your GitHub repository.")
+
+
 with tab3:
     st.header("🔄 Process Forms")
-    uploaded_template_for_processing = st.file_uploader("1. Upload the Same Blank Form Image Again", type=["png", "jpg"])
-    mapping_file = st.file_uploader("2. Upload Your Saved Mapping JSON", type=["json"])
-    excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
-    zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
+    st.info("Yahan apni files upload karke documents generate karein.")
+    
+    mapping_file = st.file_uploader("1. Upload Your Saved Mapping JSON", type=["json"])
+    excel_file = st.file_uploader("2. Upload Candidate Excel File", type=["xlsx"])
+    zip_file = st.file_uploader("3. Upload Candidate Photos ZIP", type=["zip"])
 
     if st.button("🚀 Start Processing", type="primary"):
-        if all([uploaded_template_for_processing, mapping_file, excel_file, zip_file]):
+        if all([mapping_file, excel_file, zip_file]):
             with st.spinner("Processing..."):
-                template_image_process = Image.open(uploaded_template_for_processing)
+                template_image_process = Image.open(TEMPLATE_PATH)
                 mapping = json.load(mapping_file)
                 df = get_excel_df(excel_file)
                 
@@ -207,4 +211,4 @@ with tab3:
                     st.download_button("✅ Download Final ZIP", fp, "final_results.zip", "application/zip")
                 clean_temp_dirs(TEMP_DIR)
         else:
-            st.error("Please upload all four files to start processing.")
+            st.error("Please upload all three files to start processing.")
