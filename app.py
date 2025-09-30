@@ -5,15 +5,12 @@ import os
 import zipfile
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
-from streamlit_drawable_canvas import st_canvas
 import shutil
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
-import numpy as np
-from pdf2image import convert_from_bytes
 
-# --- All Helper Functions are included in this single file ---
+# --- Helper Functions ---
 def unzip_and_organize_files(zip_file_path: str, destination_dir: str):
     os.makedirs(destination_dir, exist_ok=True)
     with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
@@ -32,8 +29,9 @@ def clean_temp_dirs(directory: str):
 def get_excel_df(excel_file_buffer) -> pd.DataFrame:
     return pd.read_excel(excel_file_buffer)
 
+# --- PDF Generation Class ---
 class ImageFormFiller:
-    def __init__(self, template_image: Image.Image, mapping_data: dict, font_path: str, font_size: int = 48):
+    def __init__(self, template_image: Image.Image, mapping_data: dict, font_path: str, font_size: int = 24):
         self.template_image = template_image.convert('RGB')
         self.mapping_data = mapping_data
         self.font_path = font_path
@@ -80,95 +78,61 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 st.sidebar.markdown('<h1 style="color:#1E3A8A;">Aiclex Technologies</h1>', unsafe_allow_html=True)
 st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Drawing Mode)", "🔄 Process Forms"])
+tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Manual)", "🔄 Process Forms"])
 
 with tab1:
     st.header("Welcome!")
-    st.write("Use the 'Template Mapping' tab to draw on your form, then use 'Process Forms' to generate the documents.")
+    st.write("Use the 'Template Mapping' tab to create your mapping file, then use 'Process Forms' to generate documents.")
 
 with tab2:
-    st.header("✍️ Template Mapping (Drawing Mode)")
-    st.info("Draw rectangles on the image below and name them. The app will calculate the coordinates for you.")
+    st.header("✍️ Template Mapping (Manual Mode)")
+    st.info("Use this tab to create your mapping file by entering coordinates from an image editor like MS Paint.")
 
     if 'mapping_data' not in st.session_state:
         st.session_state.mapping_data = {"image_size": [0, 0], "fields": {}}
 
-    uploaded_template = st.file_uploader("1. Upload Your Blank Form (PNG, JPG, or PDF)", type=["png", "jpg", "jpeg", "pdf"])
-    
-    if uploaded_template:
-        template_image = None
-        file_bytes = uploaded_template.getvalue()
-        
-        if uploaded_template.type == "application/pdf":
-            with st.spinner("Converting PDF to image..."):
-                # Convert the first page of the PDF to an image
-                images = convert_from_bytes(file_bytes)
-                if images:
-                    template_image = images[0]
-        else:
-            # It's already an image file
-            template_image = Image.open(BytesIO(file_bytes))
+    uploaded_template_file = st.file_uploader("**1. Upload Your Blank Form Image**", type=["png", "jpg", "jpeg"])
 
-        if template_image:
-            template_image = template_image.convert("RGBA")
-            
-            original_w, original_h = template_image.size
-            st.session_state.mapping_data["image_size"] = [original_w, original_h]
-            
-            st.subheader("2. Draw Boxes on the Image and Name Them")
-            
-            display_width = 800
-            display_height = int(original_h * (display_width / original_w))
-            
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 165, 0, 0.3)",
-                stroke_width=2,
-                background_image=template_image,
-                update_streamlit=True,
-                height=display_height,
-                width=display_width,
-                drawing_mode="rect",
-                key="canvas",
+    if uploaded_template_file:
+        template_image_pil = Image.open(uploaded_template_file)
+        w, h = template_image_pil.size
+        st.session_state.mapping_data["image_size"] = [w, h]
+
+        st.markdown("---")
+        st.image(template_image_pil, caption="Your Template")
+        st.success(f"**Image Dimensions:** Width = {w}px, Height = {h}px")
+        st.warning("Use MS Paint or another image editor to find the pixel coordinates for each field.")
+
+        st.markdown("---")
+        st.subheader("2. Add Fields Manually")
+
+        with st.form("mapping_form"):
+            cols = st.columns([2, 1, 1, 1, 1])
+            field_name = cols[0].text_input("Field Name (e.g., Name, Photo)")
+            x_coord = cols[1].number_input("X (from left)", min_value=0, step=10)
+            y_coord = cols[2].number_input("Y (from top)", min_value=0, step=10)
+            width = cols[3].number_input("Width", min_value=10, step=10, value=300)
+            height = cols[4].number_input("Height", min_value=10, step=10, value=50)
+            submitted = st.form_submit_button("Add Field")
+
+            if submitted and field_name:
+                st.session_state.mapping_data["fields"][field_name] = {"x": x_coord, "y": y_coord, "w": width, "h": height}
+                st.success(f"Added field '{field_name}'")
+
+        st.markdown("---")
+        st.subheader("3. Review and Download Mapping JSON")
+        if st.session_state.mapping_data["fields"]:
+            st.json(st.session_state.mapping_data["fields"])
+            st.download_button(
+                label="Download Mapping JSON File",
+                data=json.dumps(st.session_state.mapping_data, indent=2),
+                file_name="mapping.json",
+                mime="application/json"
             )
-
-            if canvas_result.json_data is not None and canvas_result.json_data["objects"]:
-                st.subheader("3. Name the Boxes You Drew")
-                field_names = {}
-                for i, obj in enumerate(canvas_result.json_data["objects"]):
-                    field_names[i] = st.text_input(f"Name for Box {i+1}", key=f"field_name_{i}")
-                
-                if st.button("Confirm Field Names"):
-                    st.session_state.mapping_data["fields"] = {} 
-                    for i, obj in enumerate(canvas_result.json_data["objects"]):
-                        field_name = field_names.get(i)
-                        if field_name:
-                            scale_w = original_w / display_width
-                            scale_h = original_h / display_height
-                            st.session_state.mapping_data["fields"][field_name] = {
-                                "x": int(obj['left'] * scale_w),
-                                "y": int(obj['top'] * scale_h),
-                                "w": int(obj['width'] * scale_w),
-                                "h": int(obj['height'] * scale_h)
-                            }
-                    st.success("Field names confirmed and coordinates saved!")
-                    st.experimental_rerun()
-            
-            st.subheader("4. Download Your Mapping File")
-            if st.session_state.mapping_data["fields"]:
-                st.json(st.session_state.mapping_data["fields"])
-                st.download_button(
-                    label="Download Mapping JSON",
-                    data=json.dumps(st.session_state.mapping_data, indent=2),
-                    file_name="drawable_mapping.json",
-                    mime="application/json"
-                )
-        else:
-            st.error("Could not convert PDF to image. Please try a different file.")
 
 with tab3:
     st.header("🔄 Process Forms")
-    # This section remains unchanged, but the user now knows they can use the same files
-    uploaded_template_for_processing = st.file_uploader("1. Upload the Same Blank Form Image Again", type=["png", "jpg"])
+    uploaded_template_for_processing = st.file_uploader("1. Upload Blank Form Image", type=["png", "jpg"])
     mapping_file = st.file_uploader("2. Upload Your Saved Mapping JSON", type=["json"])
     excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
     zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
@@ -188,7 +152,7 @@ with tab3:
                 if os.path.exists(output_run_dir): shutil.rmtree(output_run_dir)
                 os.makedirs(output_run_dir)
 
-                filler = ImageFormFiller(template_image_process, mapping, FONT_PATH, font_size=24)
+                filler = ImageFormFiller(template_image_process, mapping, FONT_PATH)
                 
                 progress_bar = st.progress(0)
                 total_rows = len(df)
