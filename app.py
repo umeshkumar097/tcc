@@ -20,7 +20,6 @@ FONT_PATH = "assets/DejaVuSans.ttf"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-st.sidebar.image('assets/aiclex_logo.png', use_column_width=True)
 st.sidebar.markdown('<h1 style="color:#1E3A8A; font-size: 28px;">Aiclex Bulk Form Filler</h1>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 st.sidebar.write("Automate filling forms with candidate data & photos.")
