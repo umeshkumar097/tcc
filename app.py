@@ -10,6 +10,7 @@ import shutil
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
+import numpy as np
 
 # --- All Helper Functions are included in this single file ---
 def unzip_and_organize_files(zip_file_path: str, destination_dir: str):
@@ -107,7 +108,8 @@ with tab2:
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
-            background_image=template_image,
+            # THE FIX IS HERE: Convert the image to a NumPy array
+            background_image=np.array(template_image),
             update_streamlit=True,
             height=display_height,
             width=display_width,
