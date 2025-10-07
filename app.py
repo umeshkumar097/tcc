@@ -9,7 +9,6 @@ import shutil
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
-import textwrap
 
 # --- Helper Functions ---
 def unzip_and_organize_files(zip_file_path: str, destination_dir: str):
@@ -28,14 +27,7 @@ def clean_temp_dirs(directory: str):
         except Exception as e: print(f"Error cleaning directory: {e}")
 
 def get_excel_df(excel_file_buffer) -> pd.DataFrame:
-    try:
-        # Try reading as Excel first
-        df = pd.read_excel(excel_file_buffer)
-    except Exception:
-        # If Excel fails, rewind buffer and try reading as CSV
-        excel_file_buffer.seek(0)
-        df = pd.read_csv(excel_file_buffer)
-    return df
+    return pd.read_excel(excel_file_buffer)
 
 # --- PDF Generation Class ---
 class ImageFormFiller:
@@ -50,15 +42,43 @@ class ImageFormFiller:
         try:
             self.pil_font = ImageFont.truetype(self.font_path, self.font_size)
         except IOError:
-            st.error(f"Font file not found at '{self.font_path}'. Using default font.")
             self.pil_font = ImageFont.load_default()
 
     def _draw_text_on_image(self, draw: ImageDraw.Draw, text: str, x: int, y: int, w: int, h: int):
-        # Improved text wrapping using standard library
-        avg_char_width = sum(self.pil_font.getlength(char) for char in 'ABC') / 3
-        max_chars = int(w / avg_char_width) if avg_char_width > 0 else 1
-        wrapped_text = textwrap.fill(text, width=max_chars)
-        draw.text((x, y), wrapped_text, font=self.pil_font, fill=(0, 0, 0))
+        text_bbox = draw.textbbox((0, 0), text, font=self.pil_font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        draw_y = y
+
+        if text_width > w:
+            words = text.split(' ')
+            lines = []
+            current_line = ""
+            for word in words:
+                test_line = f"{current_line} {word}".strip()
+                test_bbox = draw.textbbox((0, 0), test_line, font=self.pil_font)
+                test_width = test_bbox[2] - test_bbox[0]
+                if test_width <= w:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+
+            line_height = text_height + 14
+            start_y = y + (h - min(len(lines) * line_height, h)) // 2 - 2
+
+            for i, line in enumerate(lines):
+                line_bbox = draw.textbbox((0, 0), line, font=self.pil_font)
+                draw_x_line = x
+                draw_y_line = start_y + i * line_height
+                if draw_y_line + text_height <= y + h:
+                    draw.text((draw_x_line, draw_y_line), line, font=self.pil_font, fill=(0, 0, 0))
+        else:
+            draw_x = x
+            draw.text((draw_x, draw_y), text, font=self.pil_font, fill=(0, 0, 0))
 
     def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, srno: str, name: str, photo_path: str = None):
         filled_image = self.template_image.copy()
@@ -66,59 +86,66 @@ class ImageFormFiller:
 
         for field, coords in self.mapping_data["fields"].items():
             x, y, w, h = coords["x"], coords["y"], coords["w"], coords["h"]
-            value = None # Reset value for each field
 
-            # Check for Photo field first
-            if field.lower() == "photo":
-                if photo_path:
-                    try:
-                        with Image.open(photo_path) as photo:
-                            photo = photo.resize((w, h), Image.Resampling.LANCZOS)
-                            filled_image.paste(photo, (x, y))
-                    except Exception as e:
-                        print(f"Error with photo for {name}: {e}")
-                continue # Move to next field after handling photo
+            if field.lower() == "photo" and photo_path:
+                try:
+                    with Image.open(photo_path) as photo:
+                        photo = photo.resize((w, h), Image.Resampling.LANCZOS)
+                        filled_image.paste(photo, (x, y))
+                except Exception as e:
+                    print(f"Error with photo for {name}: {e}")
 
-            # --- YOUR CUSTOM LOGIC (NOW FIXED) ---
-            field_lower = field.lower()
-            if "ted" in field_lower:
-                val = candidate_data.get("ted", "")
-                if pd.notna(val) and val != "":
-                    try: value = pd.to_datetime(val).strftime("%d/%m/%Y")
-                    except: value = str(val)
-                else: value = ""
-            
-            elif "tsd" in field_lower:
-                val = candidate_data.get("tsd", "")
-                if pd.notna(val) and val != "":
-                    try: value = pd.to_datetime(val).strftime("%d/%m/%Y")
-                    except: value = str(val)
-                else: value = ""
-            
-            elif "date of birth" in field_lower or "dob" in field_lower:
-                val = candidate_data.get("date_of_birth", "")
-                if pd.notna(val) and val != "":
-                    try: value = pd.to_datetime(val).strftime("%d/%m/%Y")
-                    except: value = str(val)
-                else: value = ""
-            
-            elif "address" in field_lower:
-                parts = []
-                # Use a single list for address components for easier management
-                address_cols = ["address_line1", "address_line2", "city", "district", "state"]
-                for col in address_cols:
-                    val = candidate_data.get(col, "")
-                    if pd.notna(val) and str(val).strip():
-                        parts.append(str(val).strip())
-                value = ", ".join(parts)
-            
             else:
-                # General case for all other fields
-                value = str(candidate_data.get(field.lower().replace(" ", "_"), ""))
-            
-            # Draw the final calculated value if it exists
-            if value:
-                self._draw_text_on_image(draw, value, x, y, w, h)
+                # TED date fix
+                if "ted" in field.lower():
+                    ted_value = candidate_data.get("ted", "")
+                    if pd.notna(ted_value) and ted_value != "":
+                        try:
+                            ted_dt = pd.to_datetime(ted_value)
+                            value = ted_dt.strftime("%d/%m/%Y")
+                        except:
+                            value = str(ted_value)
+                    else:
+                        value = ""
+
+                # TSD date fix
+                elif "tsd" in field.lower():
+                    tsd_value = candidate_data.get("tsd", "")
+                    if pd.notna(tsd_value) and tsd_value != "":
+                        try:
+                            tsd_dt = pd.to_datetime(tsd_value)
+                            value = tsd_dt.strftime("%d/%m/%Y")  # same format as TED/DOB
+                        except:
+                            value = str(tsd_value)
+                    else:
+                        value = ""
+
+                # Date Of Birth fix
+                elif "date of birth" in field.lower() or "dob" in field.lower():
+                    dob_value = candidate_data.get("date_of_birth", "")
+                    if pd.notna(dob_value) and dob_value != "":
+                        try:
+                            dob_dt = pd.to_datetime(dob_value)
+                            value = dob_dt.strftime("%d/%m/%Y")
+                        except:
+                            value = str(dob_value)
+                    else:
+                        value = ""
+
+                # Address merge fix
+                elif "address" in field.lower():
+                    parts = []
+                    for col in ["address_line1", "address_line2", "city", "district", "state"]:
+                        val = candidate_data.get(col.lower(), "")
+                        if pd.notna(val) and str(val).strip() != "":
+                            parts.append(str(val).strip())
+                    value = ", ".join(parts) if parts else ""
+
+                else:
+                    value = str(candidate_data.get(field.lower(), ""))
+
+                if value:
+                    self._draw_text_on_image(draw, value, x, y, w, h)
 
         pdf_path = os.path.join(output_folder, f"{srno}_{name.replace(' ', '_')}.pdf")
         with BytesIO() as img_buffer:
@@ -131,8 +158,7 @@ class ImageFormFiller:
 # --- Streamlit App UI ---
 st.set_page_config(page_title="Aiclex Bulk Form Filler", layout="wide")
 TEMP_DIR, OUTPUT_DIR = "temp", "output"
-# CORRECTED FONT PATH
-FONT_PATH = "assets/DejaVuSans.ttf" 
+FONT_PATH = "assets/DejaVuSans.ttf/DejaVuSans.ttf"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -141,10 +167,12 @@ st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Manual)", "🔄 Process Forms"])
 
+# --- Tab 1: Overview ---
 with tab1:
     st.header("Welcome!")
     st.write("Use the 'Template Mapping' tab to create your mapping file, then use 'Process Forms' to generate documents.")
 
+# --- Tab 2: Template Mapping ---
 with tab2:
     st.header("✍️ Template Mapping (Manual Mode)")
     st.info("Enter coordinates from an image editor like MS Paint.")
@@ -184,14 +212,15 @@ with tab2:
                 mime="application/json"
             )
 
+# --- Tab 3: Process Forms ---
 with tab3:
     st.header("🔄 Process Forms")
     uploaded_template_for_processing = st.file_uploader("1. Upload Blank Form Image", type=["png", "jpg"])
     mapping_file = st.file_uploader("2. Upload Your Saved Mapping JSON", type=["json"])
-    excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx", "csv"])
+    excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
     zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
 
-    if st.button("🚀 Start Processing", type="primary"):
+    if st.button("🚀 Start Processing"):
         if all([uploaded_template_for_processing, mapping_file, excel_file, zip_file]):
             with st.spinner("Processing..."):
                 template_image_process = Image.open(uploaded_template_for_processing)
@@ -220,9 +249,6 @@ with tab3:
 
                     srno = str(row[sr_col]).split('.')[0]
                     name = row.get('Name', f"Candidate_{srno}")
-                    
-                    # Normalize the column names in the row data ONCE
-                    candidate_data_normalized = {str(k).lower().replace(" ", "_"): v for k, v in row.to_dict().items()}
 
                     photo_path = None
                     for root, _, files in os.walk(photo_dir):
@@ -237,6 +263,9 @@ with tab3:
                     candidate_folder = os.path.join(output_run_dir, f"{srno} {name}")
                     os.makedirs(candidate_folder, exist_ok=True)
                     if photo_path: shutil.copy(photo_path, candidate_folder)
+
+                    candidate_data = row.to_dict()
+                    candidate_data_normalized = {k.lower().replace(" ", "_"): v for k, v in candidate_data.items()}
 
                     filler.fill_and_save_pdf(candidate_folder, candidate_data_normalized, srno, name, photo_path)
                     progress_bar.progress((i + 1) / total_rows)
