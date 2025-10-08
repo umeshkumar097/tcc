@@ -1,94 +1,49 @@
 import os
-from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import inch
-from reportlab.lib.utils import ImageReader
+import shutil
+from zipfile import ZipFile
 
-class ImageFormFiller:
-    def __init__(self, template_image: Image.Image, mapping_data: dict, font_path: str, font_size: int = 48):
-        self.template_image = template_image
-        self.mapping_data = mapping_data
-        self.output_font_path = font_path
-        self.output_font_size = font_size
-        
-        if self.template_image.mode != 'RGB':
-            self.template_image = self.template_image.convert('RGB')
-        
-        self.dpi = 300
-        self.page_width_pts = (self.template_image.width / self.dpi) * inch
-        self.page_height_pts = (self.template_image.height / self.dpi) * inch
-        
-        try:
-            self.pil_font = ImageFont.truetype(self.output_font_path, self.output_font_size)
-        except IOError:
-            print(f"FATAL: Font file not found at '{self.output_font_path}'. Please ensure it is in the assets folder.")
-            self.pil_font = ImageFont.load_default()
+# Paths
+candidates_base_folder = r"C:\Users\Ansh Gupta\temp_project"
+final_zip_path = r"C:\Users\Ansh Gupta\final_candidates.zip"
+output_folder = r"C:\Users\Ansh Gupta\temp_filled_candidates"
 
-    def _draw_text_on_image(self, draw: ImageDraw.Draw, text: str, x: int, y: int, w: int, h: int, color=(0, 0, 0)):
-        text_bbox = draw.textbbox((0,0), text, font=self.pil_font)
-        text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
-        draw_y = y + (h - text_height) // 2
-        
-        if text_width > w:
-            words = text.split(' ')
-            lines = []
-            current_line = ""
-            for word in words:
-                test_line = f"{current_line} {word}".strip()
-                test_bbox = draw.textbbox((0,0), test_line, font=self.pil_font)
-                test_width = test_bbox[2] - test_bbox[0]
-                if test_width <= w:
-                    current_line = test_line
-                else:
-                    lines.append(current_line)
-                    current_line = word
-            lines.append(current_line)
-            line_height = text_height
-            start_y = y + (h - len(lines) * line_height) // 2
-            for i, line in enumerate(lines):
-                line_bbox = draw.textbbox((0,0), line, font=self.pil_font)
-                line_width = line_bbox[2] - line_bbox[0]
-                draw_x_line = x + (w - line_width) // 2
-                draw_y_line = start_y + i * line_height
-                if draw_y_line + line_height <= y + h:
-                    draw.text((draw_x_line, draw_y_line), line, font=self.pil_font, fill=color)
-        else:
-            draw_x = x + (w - text_width) // 2
-            draw.text((draw_x, draw_y), text, font=self.pil_font, fill=color)
+os.makedirs(output_folder, exist_ok=True)
 
-    def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, candidate_srno: str, candidate_name: str, photo_path: str = None):
-        filled_image = self.template_image.copy()
-        draw = ImageDraw.Draw(filled_image)
+for candidate_name in os.listdir(candidates_base_folder):
+    candidate_path = os.path.join(candidates_base_folder, candidate_name)
+    if os.path.isdir(candidate_path):
+        # Candidate folder inside temp output
+        candidate_output_folder = os.path.join(output_folder, candidate_name)
+        os.makedirs(candidate_output_folder, exist_ok=True)
 
-        for field_name, coords in self.mapping_data["fields"].items():
-            x, y, w, h = coords["x"], coords["y"], coords["w"], coords["h"]
-            if field_name.lower() == "photo" and photo_path and os.path.exists(photo_path):
-                try:
-                    photo = Image.open(photo_path)
-                    photo = photo.resize((w, h), Image.Resampling.LANCZOS)
-                    filled_image.paste(photo, (x, y))
-                except Exception as e:
-                    print(f"Error placing photo for {candidate_name}: {e}")
-            else:
-                field_value = None
-                for key, value in candidate_data.items():
-                    if key.lower().replace("_", " ") == field_name.lower().replace("_", " "):
-                        field_value = str(value)
-                        break
-                if field_value:
-                    self._draw_text_on_image(draw, field_value, x, y, w, h, color=(0, 0, 0))
+        # --- Fill form ---
+        photo_path = os.path.join(candidate_path, "photo.jpg")
+        candidate_data = {
+            "Name": candidate_name,
+            # Add other fields if needed
+        }
 
-        img_byte_arr = BytesIO()
-        filled_image.save(img_byte_arr, format='PNG', dpi=(self.dpi, self.dpi))
-        img_byte_arr.seek(0)
-        
-        output_filename = f"{candidate_srno}_{candidate_name.replace(' ', '_')}_filled.pdf"
-        output_pdf_path = os.path.join(output_folder, output_filename)
-        
-        c = canvas.Canvas(output_pdf_path, pagesize=(self.page_width_pts, self.page_height_pts))
-        c.drawImage(ImageReader(img_byte_arr), 0, 0, width=self.page_width_pts, height=self.page_height_pts)
-        c.save()
-        
-        return output_pdf_path
+        form_filler = ImageFormFiller(template_image, mapping_data, font_path="arial.ttf")
+        filled_pdf_path = form_filler.fill_and_save_pdf(
+            output_folder=candidate_output_folder,
+            candidate_data=candidate_data,
+            candidate_srno=candidate_name,
+            candidate_name=candidate_name,
+            photo_path=photo_path
+        )
+
+        # --- Copy all documents including the photo ---
+        for file_name in os.listdir(candidate_path):
+            file_path = os.path.join(candidate_path, file_name)
+            if os.path.isfile(file_path):
+                shutil.copy(file_path, os.path.join(candidate_output_folder, file_name))
+
+# --- Create single ZIP with all candidates ---
+with ZipFile(final_zip_path, 'w') as zipf:
+    for root, _, files in os.walk(output_folder):
+        for file in files:
+            file_path = os.path.join(root, file)
+            arcname = os.path.relpath(file_path, output_folder)
+            zipf.write(file_path, arcname)
+
+print("ZIP created successfully at:", final_zip_path)
