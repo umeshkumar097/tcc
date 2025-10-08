@@ -23,8 +23,10 @@ def create_output_zip(source_dir: str, output_zip_path: str):
 
 def clean_temp_dirs(directory: str):
     if os.path.exists(directory) and os.path.isdir(directory):
-        try: shutil.rmtree(directory)
-        except Exception as e: print(f"Error cleaning directory: {e}")
+        try:
+            shutil.rmtree(directory)
+        except Exception as e:
+            print(f"Error cleaning directory: {e}")
 
 def get_excel_df(excel_file_buffer) -> pd.DataFrame:
     return pd.read_excel(excel_file_buffer)
@@ -49,7 +51,6 @@ class ImageFormFiller:
         text_width = text_bbox[2] - text_bbox[0]
         text_height = text_bbox[3] - text_bbox[1]
         draw_y = y
-
         if text_width > w:
             words = text.split(' ')
             lines = []
@@ -66,10 +67,8 @@ class ImageFormFiller:
                     current_line = word
             if current_line:
                 lines.append(current_line)
-
             line_height = text_height + 14
             start_y = y + (h - min(len(lines) * line_height, h)) // 2 - 2
-
             for i, line in enumerate(lines):
                 line_bbox = draw.textbbox((0, 0), line, font=self.pil_font)
                 draw_x_line = x
@@ -83,10 +82,8 @@ class ImageFormFiller:
     def fill_and_save_pdf(self, output_folder: str, candidate_data: dict, srno: str, name: str, photo_path: str = None):
         filled_image = self.template_image.copy()
         draw = ImageDraw.Draw(filled_image)
-
         for field, coords in self.mapping_data["fields"].items():
             x, y, w, h = coords["x"], coords["y"], coords["w"], coords["h"]
-
             if field.lower() == "photo" and photo_path:
                 try:
                     with Image.open(photo_path) as photo:
@@ -94,9 +91,8 @@ class ImageFormFiller:
                         filled_image.paste(photo, (x, y))
                 except Exception as e:
                     print(f"Error with photo for {name}: {e}")
-
             else:
-                # TED date fix
+                # --- Field-specific formatting ---
                 if "ted" in field.lower():
                     ted_value = candidate_data.get("ted", "")
                     if pd.notna(ted_value) and ted_value != "":
@@ -107,20 +103,16 @@ class ImageFormFiller:
                             value = str(ted_value)
                     else:
                         value = ""
-
-                # TSD date fix
                 elif "tsd" in field.lower():
                     tsd_value = candidate_data.get("tsd", "")
                     if pd.notna(tsd_value) and tsd_value != "":
                         try:
                             tsd_dt = pd.to_datetime(tsd_value)
-                            value = tsd_dt.strftime("%d/%m/%Y")  # same format as TED/DOB
+                            value = tsd_dt.strftime("%d/%m/%Y")
                         except:
                             value = str(tsd_value)
                     else:
                         value = ""
-
-                # Date Of Birth fix
                 elif "date of birth" in field.lower() or "dob" in field.lower():
                     dob_value = candidate_data.get("date_of_birth", "")
                     if pd.notna(dob_value) and dob_value != "":
@@ -131,8 +123,6 @@ class ImageFormFiller:
                             value = str(dob_value)
                     else:
                         value = ""
-
-                # Address merge fix
                 elif "address" in field.lower():
                     parts = []
                     for col in ["address_line1", "address_line2", "city", "district", "state"]:
@@ -140,12 +130,23 @@ class ImageFormFiller:
                         if pd.notna(val) and str(val).strip() != "":
                             parts.append(str(val).strip())
                     value = ", ".join(parts) if parts else ""
-
                 else:
                     value = str(candidate_data.get(field.lower(), ""))
 
+                # --- Draw text with customized font size ---
                 if value:
+                    field_lower = field.lower()
+                    original_font = self.pil_font
+
+                    if field_lower in ["name"]:
+                        self.pil_font = ImageFont.truetype(self.font_path, 30)
+                    elif field_lower in ["ted", "tsd", "date of birth", "dob", "qualification"]:
+                        self.pil_font = ImageFont.truetype(self.font_path, 28)
+                    else:
+                        self.pil_font = ImageFont.truetype(self.font_path, self.font_size)
+
                     self._draw_text_on_image(draw, value, x, y, w, h)
+                    self.pil_font = original_font
 
         pdf_path = os.path.join(output_folder, f"{srno}_{name.replace(' ', '_')}.pdf")
         with BytesIO() as img_buffer:
@@ -164,7 +165,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 st.sidebar.markdown('<h1 style="color:#1E3A8A;">Aiclex Technologies</h1>', unsafe_allow_html=True)
 st.sidebar.markdown('<h3>Bulk Form Filler</h3>', unsafe_allow_html=True)
-
 tab1, tab2, tab3 = st.tabs(["🚀 Overview", "✍️ Template Mapping (Manual)", "🔄 Process Forms"])
 
 # --- Tab 1: Overview ---
@@ -178,39 +178,35 @@ with tab2:
     st.info("Enter coordinates from an image editor like MS Paint.")
     if 'mapping_data' not in st.session_state:
         st.session_state.mapping_data = {"image_size": [0, 0], "fields": {}}
-
     uploaded_template_file = st.file_uploader("**1. Upload Blank Form Image**", type=["png", "jpg", "jpeg"])
     if uploaded_template_file:
         template_image_pil = Image.open(uploaded_template_file)
         w, h = template_image_pil.size
         st.session_state.mapping_data["image_size"] = [w, h]
-
         st.image(template_image_pil, caption="Your Template")
         st.success(f"**Image Dimensions:** Width = {w}px, Height = {h}px")
         st.warning("Use MS Paint or another image editor to find the pixel coordinates for each field.")
-
-        st.subheader("2. Add Fields Manually")
-        with st.form("mapping_form"):
-            cols = st.columns([2, 1, 1, 1, 1])
-            field_name = cols[0].text_input("Field Name (e.g., Name, Photo, Address, TED)")
-            x_coord = cols[1].number_input("X (from left)", min_value=0, step=10)
-            y_coord = cols[2].number_input("Y (from top)", min_value=0, step=10)
-            width = cols[3].number_input("Width", min_value=10, step=10, value=300)
-            height = cols[4].number_input("Height", min_value=10, step=10, value=50)
-            submitted = st.form_submit_button("Add Field")
-            if submitted and field_name:
-                st.session_state.mapping_data["fields"][field_name] = {"x": x_coord, "y": y_coord, "w": width, "h": height}
-                st.success(f"Added field '{field_name}'")
-
-        st.subheader("3. Review and Download Mapping JSON")
-        if st.session_state.mapping_data["fields"]:
-            st.json(st.session_state.mapping_data["fields"])
-            st.download_button(
-                label="Download Mapping JSON File",
-                data=json.dumps(st.session_state.mapping_data, indent=2),
-                file_name="mapping.json",
-                mime="application/json"
-            )
+    st.subheader("2. Add Fields Manually")
+    with st.form("mapping_form"):
+        cols = st.columns([2, 1, 1, 1, 1])
+        field_name = cols[0].text_input("Field Name (e.g., Name, Photo, Address, TED)")
+        x_coord = cols[1].number_input("X (from left)", min_value=0, step=10)
+        y_coord = cols[2].number_input("Y (from top)", min_value=0, step=10)
+        width = cols[3].number_input("Width", min_value=10, step=10, value=300)
+        height = cols[4].number_input("Height", min_value=10, step=10, value=50)
+        submitted = st.form_submit_button("Add Field")
+        if submitted and field_name:
+            st.session_state.mapping_data["fields"][field_name] = {"x": x_coord, "y": y_coord, "w": width, "h": height}
+            st.success(f"Added field '{field_name}'")
+    st.subheader("3. Review and Download Mapping JSON")
+    if st.session_state.mapping_data["fields"]:
+        st.json(st.session_state.mapping_data["fields"])
+        st.download_button(
+            label="Download Mapping JSON File",
+            data=json.dumps(st.session_state.mapping_data, indent=2),
+            file_name="mapping.json",
+            mime="application/json"
+        )
 
 # --- Tab 3: Process Forms ---
 with tab3:
@@ -220,6 +216,7 @@ with tab3:
     excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
     zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
 
+    # --- START PROCESSING (Fixed Block) ---
     if st.button("🚀 Start Processing"):
         if all([uploaded_template_for_processing, mapping_file, excel_file, zip_file]):
             with st.spinner("Processing..."):
@@ -230,6 +227,8 @@ with tab3:
                 zip_path = os.path.join(TEMP_DIR, zip_file.name)
                 with open(zip_path, "wb") as f:
                     f.write(zip_file.getbuffer())
+
+                # Unzip candidate photos/documents
                 photo_dir = unzip_and_organize_files(zip_path, os.path.join(TEMP_DIR, "photos"))
 
                 output_run_dir = os.path.join(OUTPUT_DIR, "run")
@@ -242,32 +241,43 @@ with tab3:
                 total_rows = len(df)
 
                 for i, row in df.iterrows():
+                    # Detect SrNo / serial column
                     sr_col = next((c for c in ['SrNo', 'Sl No.', 'SNo', 'Serial'] if c in df.columns), None)
                     if not sr_col:
                         st.error("Error: 'SrNo' or 'Sl No.' column not found in Excel.")
                         break
-
                     srno = str(row[sr_col]).split('.')[0]
                     name = row.get('Name', f"Candidate_{srno}")
 
-                    photo_path = None
-                    for root, _, files in os.walk(photo_dir):
-                        found = False
-                        for file in files:
-                            if srno in file or srno in os.path.basename(root):
-                                photo_path = os.path.join(root, file)
-                                found = True
+                    # Find candidate folder inside unzipped photos
+                    candidate_folder_path = None
+                    for root, dirs, _ in os.walk(photo_dir):
+                        for d in dirs:
+                            if srno in d or (name.lower() in d.lower()):
+                                candidate_folder_path = os.path.join(root, d)
                                 break
-                        if found: break
+                        if candidate_folder_path:
+                            break
 
                     candidate_folder = os.path.join(output_run_dir, f"{srno} {name}")
                     os.makedirs(candidate_folder, exist_ok=True)
-                    if photo_path: shutil.copy(photo_path, candidate_folder)
+
+                    # Copy all JPG documents (photo + other docs)
+                    if candidate_folder_path:
+                        for file_name in os.listdir(candidate_folder_path):
+                            file_path = os.path.join(candidate_folder_path, file_name)
+                            if os.path.isfile(file_path) and file_name.lower().endswith(".jpg"):
+                                shutil.copy(file_path, candidate_folder)
 
                     candidate_data = row.to_dict()
                     candidate_data_normalized = {k.lower().replace(" ", "_"): v for k, v in candidate_data.items()}
 
+                    # Fill PDF form with photo (if exists)
+                    photo_path = os.path.join(candidate_folder, "photo.jpg")
+                    if not os.path.exists(photo_path):
+                        photo_path = None
                     filler.fill_and_save_pdf(candidate_folder, candidate_data_normalized, srno, name, photo_path)
+
                     progress_bar.progress((i + 1) / total_rows)
 
                 final_zip = os.path.join(OUTPUT_DIR, "final_results.zip")
