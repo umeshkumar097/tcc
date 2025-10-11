@@ -84,7 +84,7 @@ class ImageFormFiller:
         draw = ImageDraw.Draw(filled_image)
         for field, coords in self.mapping_data["fields"].items():
             x, y, w, h = coords["x"], coords["y"], coords["w"], coords["h"]
-            if field.lower() == "photo" and photo_path:
+            if "photo" in field.lower() and photo_path:
                 try:
                     with Image.open(photo_path) as photo:
                         photo = photo.resize((w, h), Image.Resampling.LANCZOS)
@@ -95,34 +95,13 @@ class ImageFormFiller:
                 # --- Field-specific formatting ---
                 if "ted" in field.lower():
                     ted_value = candidate_data.get("ted", "")
-                    if pd.notna(ted_value) and ted_value != "":
-                        try:
-                            ted_dt = pd.to_datetime(ted_value)
-                            value = ted_dt.strftime("%d/%m/%Y")
-                        except:
-                            value = str(ted_value)
-                    else:
-                        value = ""
+                    value = str(pd.to_datetime(ted_value).strftime("%d/%m/%Y")) if pd.notna(ted_value) and ted_value != "" else ""
                 elif "tsd" in field.lower():
                     tsd_value = candidate_data.get("tsd", "")
-                    if pd.notna(tsd_value) and tsd_value != "":
-                        try:
-                            tsd_dt = pd.to_datetime(tsd_value)
-                            value = tsd_dt.strftime("%d/%m/%Y")
-                        except:
-                            value = str(tsd_value)
-                    else:
-                        value = ""
+                    value = str(pd.to_datetime(tsd_value).strftime("%d/%m/%Y")) if pd.notna(tsd_value) and tsd_value != "" else ""
                 elif "date of birth" in field.lower() or "dob" in field.lower():
                     dob_value = candidate_data.get("date_of_birth", "")
-                    if pd.notna(dob_value) and dob_value != "":
-                        try:
-                            dob_dt = pd.to_datetime(dob_value)
-                            value = dob_dt.strftime("%d/%m/%Y")
-                        except:
-                            value = str(dob_value)
-                    else:
-                        value = ""
+                    value = str(pd.to_datetime(dob_value).strftime("%d/%m/%Y")) if pd.notna(dob_value) and dob_value != "" else ""
                 elif "address" in field.lower():
                     parts = []
                     for col in ["address_line1", "address_line2", "city", "district", "state"]:
@@ -137,14 +116,12 @@ class ImageFormFiller:
                 if value:
                     field_lower = field.lower()
                     original_font = self.pil_font
-
                     if field_lower in ["name"]:
                         self.pil_font = ImageFont.truetype(self.font_path, 30)
                     elif field_lower in ["ted", "tsd", "date of birth", "dob", "qualification"]:
                         self.pil_font = ImageFont.truetype(self.font_path, 28)
                     else:
                         self.pil_font = ImageFont.truetype(self.font_path, self.font_size)
-
                     self._draw_text_on_image(draw, value, x, y, w, h)
                     self.pil_font = original_font
 
@@ -216,7 +193,6 @@ with tab3:
     excel_file = st.file_uploader("3. Upload Candidate Excel File", type=["xlsx"])
     zip_file = st.file_uploader("4. Upload Candidate Photos ZIP", type=["zip"])
 
-    # --- START PROCESSING (Fixed Block) ---
     if st.button("🚀 Start Processing"):
         if all([uploaded_template_for_processing, mapping_file, excel_file, zip_file]):
             with st.spinner("Processing..."):
@@ -228,9 +204,7 @@ with tab3:
                 with open(zip_path, "wb") as f:
                     f.write(zip_file.getbuffer())
 
-                # Unzip candidate photos/documents
                 photo_dir = unzip_and_organize_files(zip_path, os.path.join(TEMP_DIR, "photos"))
-
                 output_run_dir = os.path.join(OUTPUT_DIR, "run")
                 if os.path.exists(output_run_dir):
                     shutil.rmtree(output_run_dir)
@@ -241,7 +215,6 @@ with tab3:
                 total_rows = len(df)
 
                 for i, row in df.iterrows():
-                    # Detect SrNo / serial column
                     sr_col = next((c for c in ['SrNo', 'Sl No.', 'SNo', 'Serial'] if c in df.columns), None)
                     if not sr_col:
                         st.error("Error: 'SrNo' or 'Sl No.' column not found in Excel.")
@@ -249,11 +222,12 @@ with tab3:
                     srno = str(row[sr_col]).split('.')[0]
                     name = row.get('Name', f"Candidate_{srno}")
 
-                    # Find candidate folder inside unzipped photos
+                    # --- Find exact candidate folder ---
                     candidate_folder_path = None
                     for root, dirs, _ in os.walk(photo_dir):
                         for d in dirs:
-                            if srno in d or (name.lower() in d.lower()):
+                            d_clean = d.strip()
+                            if d_clean.startswith(str(srno)) and name.lower() in d_clean.lower():
                                 candidate_folder_path = os.path.join(root, d)
                                 break
                         if candidate_folder_path:
@@ -262,22 +236,25 @@ with tab3:
                     candidate_folder = os.path.join(output_run_dir, f"{srno} {name}")
                     os.makedirs(candidate_folder, exist_ok=True)
 
-                    # Copy all JPG documents (photo + other docs)
+                    # --- Copy all candidate files ---
                     if candidate_folder_path:
                         for file_name in os.listdir(candidate_folder_path):
                             file_path = os.path.join(candidate_folder_path, file_name)
-                            if os.path.isfile(file_path) and file_name.lower().endswith(".jpg"):
+                            if os.path.isfile(file_path):
                                 shutil.copy(file_path, candidate_folder)
 
                     candidate_data = row.to_dict()
                     candidate_data_normalized = {k.lower().replace(" ", "_"): v for k, v in candidate_data.items()}
 
-                    # Fill PDF form with photo (if exists)
-                    photo_path = os.path.join(candidate_folder, "photo.jpg")
-                    if not os.path.exists(photo_path):
-                        photo_path = None
-                    filler.fill_and_save_pdf(candidate_folder, candidate_data_normalized, srno, name, photo_path)
+                    # --- Pick correct photo ---
+                    photo_path = None
+                    if candidate_folder_path:
+                        for fname in os.listdir(candidate_folder_path):
+                            if fname.lower().startswith("photo") and fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                                photo_path = os.path.join(candidate_folder, fname)
+                                break
 
+                    filler.fill_and_save_pdf(candidate_folder, candidate_data_normalized, srno, name, photo_path)
                     progress_bar.progress((i + 1) / total_rows)
 
                 final_zip = os.path.join(OUTPUT_DIR, "final_results.zip")
