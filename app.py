@@ -147,7 +147,7 @@ with tab2:
     st.header("🔄 Process Forms")
 
     # --- Fixed template & mapping ---
-    TEMPLATE_PATH = "assets/1A UMESH.jpg"
+    TEMPLATE_PATH = "assets/template.png"
     MAPPING_PATH = "assets/updated_mapping.json"
     template_image = Image.open(TEMPLATE_PATH)
     st.image(template_image, caption="Fixed Template (Cannot be changed)")
