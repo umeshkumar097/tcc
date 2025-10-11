@@ -148,7 +148,7 @@ with tab2:
 
     # --- Fixed template & mapping ---
     TEMPLATE_PATH = "assets/template.png"
-    MAPPING_PATH = "assets/updated_mapping.json"
+    MAPPING_PATH = "assets/updated_mapping (75).json"
     template_image = Image.open(TEMPLATE_PATH)
     st.image(template_image, caption="Fixed Template (Cannot be changed)")
 
