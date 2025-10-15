@@ -186,7 +186,7 @@ with tab1:
 
 with tab2:
     TEMPLATE_PATH = "assets/template.png"
-    MAPPING_PATH = "assets/updated_mapping(75).json"
+    MAPPING_PATH = "assets/updated_mapping (75).json"
     template_image = Image.open(TEMPLATE_PATH)
     st.image(template_image, caption="Fixed Template")
     with open(MAPPING_PATH, "r") as f:
