@@ -185,8 +185,8 @@ with tab1:
     st.write("This app uses a fixed template and mapping JSON. Upload Excel and Photos ZIP to generate JPG forms.")
 
 with tab2:
-    TEMPLATE_PATH = "assets/template.png"
-    MAPPING_PATH = "assets/updated_mapping (75).json"
+    TEMPLATE_PATH = "assets/1A UMESH.jpg"
+    MAPPING_PATH = "assets/updated_mapping.json"
     template_image = Image.open(TEMPLATE_PATH)
     st.image(template_image, caption="Fixed Template")
     with open(MAPPING_PATH, "r") as f:
@@ -210,7 +210,12 @@ with tab2:
                 photo_dir = unzip_and_organize_files(zip_path, os.path.join(TEMP_DIR, "photos"))
 
                 EMAIL_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "by_email")
+
+# 🧹 Clean old output before regenerating
+                if os.path.exists(EMAIL_OUTPUT_DIR):
+                    shutil.rmtree(EMAIL_OUTPUT_DIR)
                 os.makedirs(EMAIL_OUTPUT_DIR, exist_ok=True)
+
 
                 filler = ImageFormFiller(template_image, mapping, FONT_PATH)
                 email_zip_dict = {}
