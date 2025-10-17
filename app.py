@@ -185,8 +185,8 @@ with tab1:
     st.write("This app uses a fixed template and mapping JSON. Upload Excel and Photos ZIP to generate JPG forms.")
 
 with tab2:
-    TEMPLATE_PATH = "assets/1A UMESH.jpg"
-    MAPPING_PATH = "assets/updated_mapping.json"
+    TEMPLATE_PATH = "assets/template.png"
+    MAPPING_PATH = "assets/updated_mapping (75).json"
     template_image = Image.open(TEMPLATE_PATH)
     st.image(template_image, caption="Fixed Template")
     with open(MAPPING_PATH, "r") as f:
