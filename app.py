@@ -98,42 +98,48 @@ class DRACertificateFiller:
             f_reg = fitz.Font("helv")
             f_bold = fitz.Font("hebo")
 
-        # 1. Candidate's Name (Bold, 12pt) aligned in same straight vertical line at x = 54.02
+        # 1. Candidate's Name (Bold, on SAME line at baseline 221.5)
         c_name = extract_field(candidate_data, ['name', 'candidate_name', 'candidates_name', 'candidate_name_mr_ms_mrs'], ['name'], default=name)
-        disp_name = c_name if c_name else name
+        disp_name = (c_name if c_name else name).strip()
         if disp_name:
-            page.insert_text(fitz.Point(54.02, 240.0), disp_name, fontname=fn_bold, fontsize=12, color=(0, 0, 0))
+            name_x = 54.02 + f_bold.text_length("Candidate's Name (Mr./Ms./Mrs.): ", fontsize=10)
+            avail_w = 460.0 - name_x - 8.0
+            name_size = 10.0
+            name_w = f_bold.text_length(disp_name, fontsize=name_size)
+            if name_w > avail_w:
+                name_size = max(8.0, name_size * (avail_w / name_w))
+            page.insert_text(fitz.Point(name_x, 221.5), disp_name, fontname=fn_bold, fontsize=name_size, color=(0, 0, 0))
 
-        # 2. Date of Birth (Bold, 10pt) aligned with 'Date of Birth: ' label at x = 54.02
+        # 2. Date of Birth (Bold, 10pt) - baseline 244.5
         raw_dob = extract_field(candidate_data, ['date_of_birth', 'dob', 'birth_date'], ['birth', 'dob'])
         dob_str = format_date(raw_dob)
         if dob_str:
             dob_label_w = f_bold.text_length('Date of Birth: ', fontsize=10)
-            page.insert_text(fitz.Point(54.02 + dob_label_w, 260.5), dob_str, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+            page.insert_text(fitz.Point(54.02 + dob_label_w, 244.5), dob_str, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
-        # 3. Training ID (Bold, 10pt) - baseline aligned with heading (279.2)
+        # 3. Training ID (Bold, 10pt) - baseline 267.5
         trg_id = extract_field(candidate_data, ['training_id', 'trainingid', 'trg_id', 'batch_id'], ['training_id', 'trainingid', 'trg_id', 'batch'])
         if trg_id:
-            page.insert_text(fitz.Point(125.0, 279.2), trg_id, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+            page.insert_text(fitz.Point(125.2, 267.5), trg_id, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
-        # 4. Training Hours (Bold, 10pt) - baseline aligned with heading (299.1)
+        # 4. Training Hours (Bold, 10pt) - baseline 290.5
         hours = extract_field(candidate_data, ['training_hours_(50_/_100)', 'training_hours_(50/100)', 'training_hours', 'hours', 'trg_hours'], ['hour'])
         if hours:
-            page.insert_text(fitz.Point(208.5, 299.1), hours, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+            page.insert_text(fitz.Point(208.5, 290.5), hours, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
-        # 5. Training Medium (Bold, 10pt) - baseline aligned with heading (319.1)
+        # 5. Training Medium (Bold, 10pt) - baseline 313.5
         medium = extract_field(candidate_data, ['training_medium_(language):', 'training_medium_(language)', 'training_medium', 'language', 'medium'], ['medium', 'language'])
         if medium:
-            page.insert_text(fitz.Point(225.0, 319.1), medium, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+            page.insert_text(fitz.Point(225.0, 313.5), medium, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
-        # 6. Training Mode (Bold, 10pt) - on SAME line as heading, baseline aligned (339.2)
+        # 6. Training Mode (Bold, 10pt) - on SAME line as heading, baseline 336.5
         mode = extract_field(candidate_data, ['training_mode_(online/offline):', 'training_mode_(online/offline)', 'training_mode', 'mode'], ['mode'])
         if mode:
-            page.insert_text(fitz.Point(237.0, 339.2), mode, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+            page.insert_text(fitz.Point(237.0, 336.5), mode, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
-        # 7. Training Center Location (Bold, 10pt) - moved up to baseline 359.2 directly after heading (minimized space)
+        # 7. Training Center Location (Bold, 10pt) - baseline 359.5
         loc = extract_field(candidate_data, ['training_center_location_(in_case_of_offline_batch):', 'training_center_location_(in_case_of_offline_batch)', 'training_center_location', 'location', 'center_location'], ['location', 'center'], default="NA")
-        page.insert_text(fitz.Point(342.0, 359.2), loc, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
+        page.insert_text(fitz.Point(342.0, 359.5), loc, fontname=fn_bold, fontsize=10, color=(0, 0, 0))
 
         # 8. TSD and TED in acknowledgement paragraph
         raw_tsd = extract_field(candidate_data, ['tsd', 'training_start_date', 'start_date'], ['tsd', 'start'])
@@ -163,8 +169,8 @@ class DRACertificateFiller:
         filled_image = Image.open(BytesIO(pix.tobytes("jpeg")))
         doc.close()
 
-        # Photo box coordinates on 300 DPI canvas
-        x, y, w, h = 1826, 860, 435, 537
+        # Photo box coordinates on 300 DPI canvas (shifted: x0=468.0, y0=218.0, w=92.0, h=122.5)
+        x, y, w, h = 1950, 908, 383, 510
 
         # Apply photo using PIL (same as before)
         if photo_path:
