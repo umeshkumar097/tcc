@@ -232,22 +232,7 @@ FONT_BOLD = "assets/verdanab.ttf"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Login ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
 
-if not st.session_state.logged_in:
-    st.title("🔐 DRA Certificate Generator Login")
-    pwd = st.text_input("Enter Access Password:", type="password")
-    if st.button("Unlock"):
-        correct_pwd = st.secrets["auth"].get("Login_password", st.secrets["auth"].get("login_password", "admin"))
-        if pwd == correct_pwd:
-            st.session_state.logged_in = True
-            st.success("✅ Access granted!")
-            st.rerun()
-        else:
-            st.error("❌ Incorrect password")
-    st.stop()
 
 # --- Main App ---
 st.sidebar.markdown('<h1 style="color:#1E3A8A;">Crux / Aiclex</h1>', unsafe_allow_html=True)
