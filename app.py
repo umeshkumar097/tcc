@@ -36,7 +36,18 @@ def format_date(val):
     if not val or pd.isna(val) or str(val).strip() == "" or str(val).lower() in ["nan", "none"]:
         return ""
     try:
-        dt = pd.to_datetime(val, dayfirst=True)
+        import datetime
+        # If val is already a datetime/Timestamp, use it directly (no re-parsing needed)
+        if isinstance(val, (datetime.datetime, datetime.date, pd.Timestamp)):
+            dt = pd.Timestamp(val)
+        else:
+            s = str(val).strip()
+            # If the string is in ISO format (YYYY-MM-DD...), parse with dayfirst=False
+            # to avoid swapping day and month
+            if re.match(r'^\d{4}-\d{2}-\d{2}', s):
+                dt = pd.to_datetime(s, dayfirst=False)
+            else:
+                dt = pd.to_datetime(s, dayfirst=True)
         return f"{dt.day}-{dt.month}-{dt.year}"
     except:
         return str(val).strip()
@@ -322,7 +333,7 @@ with tab2:
                                     break
 
                             if not photo_path:
-                                print(f"⚠️ Photo not found for {name} (SrNo={srno})")
+                                print(f"[WARNING] Photo not found for {name} (SrNo={srno})")
 
                             filler.fill_and_save_jpg(email_folder, candidate_data, srno, name, photo_path)
 
